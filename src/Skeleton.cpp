@@ -31,20 +31,11 @@
 // negativ elojellel szamoljak el es ezzel parhuzamosan eljaras is indul velem szemben.
 //=============================================================================================//=============================================================================================
 
-// VIGYÁZZ!!! Includeolgat a zed
 #include "framework.h"
-#include <asm-generic/errno.h>
-#include <chrono>
-#include <cmath>
-#include <cstdio>
-#include <execution>
-#include <thread>
-#include <vector>
 
-// diasorról másolva
 class Camera2D {
-	vec2 wCenter; // center in world coords
-	vec2 wSize; // width and height in world coords
+	vec2 wCenter;
+	vec2 wSize;
 public:
 	Camera2D(vec2 wCenter, vec2 wSize){
 		this->wCenter = wCenter;
@@ -62,9 +53,6 @@ public:
 	mat4 Pinv() { // inverse projection matrix
 		return scale(vec3(wSize.x/2, wSize.y/2, 1));
 	}
-	// Ezek asszem nem kellenek
-	void Zoom(float s) { wSize = wSize * s; }
-	void Pan(vec2 t) { wCenter = wCenter + t; }
 };
 
 const char* vertSource = R"(
@@ -97,15 +85,13 @@ const int winWidth = 600, winHeight = 600;
 
 class CatmullRomSpline {
 public:
-// Nem Hermite-nak kéne lennie?
-	Geometry<vec2>  draw_curve;	// Bezier görbe
-	Geometry<vec2>  draw_cps;	// Bezier görbe kontrollpontjai
-	vec2 a0, a1, a2, a3;    // polinom együtthatók
-	float segment_tau;
-	// int tauMax = 0;         // az aktív paramétertartomány
+	Geometry<vec2>  draw_curve; // kirajzolt töröttvonal pontjai, ezt használjuk majd ütközésszámításhoz
+	Geometry<vec2>  draw_cps; // megjelenített kontrollpontok
+	vec2 a0, a1, a2, a3; // polinom együtthatók
+	float segment_tau; // tau a szegmens kezdetétől
 
-	std::vector<vec2> cps;
-	std::vector<float> ts; // gondolom egyes csomópontoknál milyen t legyen
+	std::vector<vec2> cps; // számításhoz használt csomópontok
+	std::vector<float> ts; // csomópontokhoz tartozó tau értékek
 
 	void Hermite(vec2 p0, vec2 v0, float t0, vec2 p1, vec2 v1, float t1, float t){
 		a0 = p0;
@@ -115,7 +101,6 @@ public:
 		segment_tau = t-t0;
 	};
 	void update_data(){
-
 		cps.clear();
 
 		// az első pontnak kell az utolsó, hogy lehessen sebességet számítani
@@ -136,77 +121,47 @@ public:
 		for(size_t i = 1; i < cps.size(); i++){
 			ts.push_back(ts[i-1] + length(cps[i] - cps[i-1]));
 		}
-
-		// printf("%d, %d", cps.size(), ts.size());
 	}
 	void update() {
 		update_data();
 		float tauMax = ts[ts.size()-2];
 		float tauMin = ts[1];
-		// draw_cps-t külön kéne kezelni, amikor a pontokat hozzáadom
-		// mert így meg lehet oldani, hogy az eleje / vége duplán legyen tárolva a számításokhoz, de itt meg csak egyszer legyenek
+
 		draw_curve.Vtx().clear();
 		if (draw_cps.Vtx().size() >= 3) {
 			const int nVertices = 100; // A közelítő töröttvonal csúcsszáma
-			// printf("Tau values:\n");
 			for (int i = 0; i < nVertices; i++) {	// Tesszelláció
 				float tau = tauMin + (float)i * (tauMax-tauMin) / nVertices;
-				// printf("%.2f, ", tau);
 				draw_curve.Vtx().push_back(r(tau));
 			}
-			// draw_curve.Vtx().push_back(r(tauMax - 0.0001f));
+			draw_curve.Vtx().push_back(r(tauMax - 0.0001f));
 			draw_curve.updateGPU();
 		}
 	}
-	// float paramMax() { return tauMax; }
-	// megkeresi a megfelelő polynomrészletet, és kitölteti a Hermite-al az értékeket
+	// megkeresi a megfelelő polinomrészletet, és kitölteti a Hermite-al az értékeket
 	void Polynom(float tau){
-		// mik a határok?
-		static bool asd = false;
-		// if(!asd){
-		// 	std::vector<vec2> speedvec;
-		// 	for(size_t i = 1; i < cps.size()-1; i++){
-		// 		vec2 vi = 0.5f * ( ( (cps[i+1] - cps[i]) / (ts[i+1] - ts[i]) ) + ( (cps[i] - cps[i-1]) / (ts[i] - ts[i-1]) ) );
-		// 		asd = true;
-		// 	}
-		// }
-
 		for(size_t i = 1; i<cps.size() - 2; i++){
 			if(ts[i] <= tau && tau <= ts[i+1]){
 				vec2 v0 = 0.5f * ( ( (cps[i+1] - cps[i]) / (ts[i+1] - ts[i]) ) + ( (cps[i] - cps[i-1]) / (ts[i] - ts[i-1]) ) );
 				i++;
 				vec2 v1 = 0.5f * ( ( (cps[i+1] - cps[i]) / (ts[i+1] - ts[i]) ) + ( (cps[i] - cps[i-1]) / (ts[i] - ts[i-1]) ) );
 				i--;
-
 				Hermite(cps[i], v0, ts[i], cps[i+1], v1, ts[i+1], tau);
 				return;
 			}
 		}
-		printf("Wrong tau");
 	}
 	vec2 r(float tau) { // Catmull-Rom spline
 		Polynom(tau);
-		// MAJD VISSZACSERÉLNI
-		return a3*pow(segment_tau, 3) + a2*pow(segment_tau, 2) + a1*segment_tau + a0;
-		// return ((a3*segment_tau + a2)*segment_tau + a1)*segment_tau + a0;
-	}
-	// ez kell
-	vec2 r1d(float tau) { // Első derivált
-		Polynom(tau);
-		return (3.0f * a3 * segment_tau + 2.0f * a2) * segment_tau + a1;
+		return ((a3*segment_tau + a2)*segment_tau + a1)*segment_tau + a0;
 	}
 	void Draw(GPUProgram* gpuProgram, Camera2D& camera) {
 		mat4 MVP = camera.P() * camera.V();
 		gpuProgram->setUniform(MVP, "MVP");
-		draw_curve.Draw(gpuProgram, GL_LINE_LOOP, vec3(1, 1, 1)); // g�rbe
-		// draw_curve.Draw(gpuProgram, GL_POINTS, vec3(1, 0, 1)); // g�rbe
-		// draw_cps.Draw(gpuProgram, GL_LINES, vec3(1, 1, 0)); // g�rbe
-		draw_cps.Draw(gpuProgram, GL_POINTS, vec3(1, 0, 0));	// kontrollpontok
+		draw_curve.Draw(gpuProgram, GL_LINE_LOOP, vec3(1, 1, 0));
+		draw_cps.Draw(gpuProgram, GL_POINTS, vec3(1, 0, 0));
 	}
-	// TODO: Itt adja hozzá jól a knot value-t.
 	void addControlPoint(vec2 p){
-		printf("Added control point %f, %f\n", p.x, p.y);
-
 		draw_cps.Vtx().push_back(p);
 		draw_cps.updateGPU();
 
@@ -220,6 +175,8 @@ class Ball: Geometry<vec2>{
 	const vec2 g = vec2(0, -5);
 
 	float collision_time;
+
+	int perv_collision_id = -1;
 
 	constexpr static float radius = 1.0;
 public:
@@ -242,13 +199,9 @@ public:
 		Geometry<vec2>::Draw(prog, GL_TRIANGLE_FAN, vec3(0, 0, 1));
 	}
 	// Lehet nem így kell, mert nem az elejétől kéne számítani, hanem a deltákból?
-	void updateFromTime(float maxT, std::vector<vec2>* spline, Geometry<vec2>* collisionPoints){
-		// TODO NEM STATIC HANEM A BALL-NAK TAGVÁLTOZÓJA
-		static int fordulasos_updateok = 0;
-		bool voltfordulas = false;
-		static int perv_collision_id = -1;
+	void updateFromTime(float maxT, std::vector<vec2>* spline){
 		while (true) {
-			int collision_id = -1;
+			size_t collision_id = -1;
 			collision_time = maxT;
 
 			if(!spline->empty()){
@@ -259,13 +212,13 @@ public:
 
 					vec2 line_start = (*spline)[i];
 					vec2 line_end = (*spline)[i+1];
-					if(this->collideWithLineSegment(line_start, line_end, maxT, collisionPoints)){
+					if(this->collideWithLineSegment(line_start, line_end, maxT)){
 						collision_id = i;
 					}
 				}
 
 				if(perv_collision_id != spline->size()){
-					if(this->collideWithLineSegment((*spline)[spline->size()-1], (*spline)[0], maxT, collisionPoints)){
+					if(this->collideWithLineSegment((*spline)[spline->size()-1], (*spline)[0], maxT)){
 						collision_id = spline->size();
 					}
 				}
@@ -292,61 +245,38 @@ public:
 				collision_dirvec = (*spline)[collision_id] - (*spline)[collision_id+1];
 			}
 
-			printf("Fennmaradó maxT: %f\n", maxT);
-			printf("FORDUL %.2f, %.2f\n", v0.x, v0.y);
-			printf("%f, %f\n", collision_dirvec.x, collision_dirvec.y);
 			// volt ütközés, a frissített v0-t át kell forgatni
 			vec2 paralell = (dot(v0, collision_dirvec) / dot(collision_dirvec, collision_dirvec)) * collision_dirvec;
 			vec2 perpend = v0 - paralell;
 
 			v0 = paralell - perpend;
-			printf("FORDUL2 %.2f, %.2f\n", v0.x, v0.y);
-			voltfordulas = true;
-		}
 
-		if(voltfordulas){
-			printf("\n");
-			fordulasos_updateok++;
 		}
-
 	}
 	// kiszámítja a metszéspontot, beállítja a közös változóban, hogy milyen t-vel ütközik, és ha ütközött, igazat ad vissza
-	bool collideWithLineSegment(vec2 line_start, vec2 line_end, float maxT, Geometry<vec2>* collisionPoints){
-		// MAJD MINDENKÉPP LEGYEN BENNE, HOGY LINE_LOOP ÉS KELL FELVENNI ITT KÜLÖN AZ UTOLSÓT, AMIKOR EZT A FÜGGVÉNYT MEGHÍVJUK
+	bool collideWithLineSegment(vec2 line_start, vec2 line_end, float maxT){
 		vec2 dirvec = line_end-line_start;
 		vec2 normvec = vec2(-dirvec.y, dirvec.x);
 
 		// egyenes egyenlete Ax + By + C = 0
-		// ax = normvec.x;
-		// by = normvec.y;
-		// constant = dot(-1 * normvec, vec3(p.x, p.y, 0));
 		float lineA = normvec.x;
 		float lineB = normvec.y;
-		float lineC = dot(-1*normvec, line_start);
+		float lineC = -1*dot(normvec, line_start);
 
 		float A = 0.5*g.y*lineB;
 		float B = v0.y*lineB + v0.x*lineA;
 		float C = lineA*pos.x + lineB*pos.y + lineC;
 
-		std::vector<float> collision_times;
-
 		float D = B * B - 4 * A * C;
-		collisionPoints->Vtx().clear();
 
 		bool had_collision = false;
 		if (D < 0){
-			// nincs collision point
+
 		}else if (D == 0) {
 			float t = (-B) / (2 * A);
-			collision_times.push_back(t);
-
 			if(0 < t && t<=collision_time){
 				collision_time = t;
-				// collision_dirvec = dirvec;
 				had_collision = true;
-				// vec2 coll = pos + t*v0 + t*t*g/2;
-				// printf("Collision with %.2f, %.2f\n", coll.x, coll.y);
-				// collisionPoints->Vtx().push_back(coll);
 			}
 		}
 		else
@@ -361,37 +291,28 @@ public:
 			if(xmin <= coll1.x && coll1.x <= xmax){
 				if(0 < t1 && t1 <= maxT){
 					collision_time = t1;
-					// collision_dirvec = dirvec;
 					had_collision = true;
-					// printf("Collision with %.2f, %.2f\n", coll1.x, coll1.y);
-					// collisionPoints->Vtx().push_back(coll1);
-					// collision_times.push_back(t1);
 				}
 			}
 			if(xmin <= coll2.x && coll2.x <= xmax){
 				if(0 < t2 && t2 <= maxT){
 					collision_time = t2;
-					// collision_dirvec = dirvec;
 					had_collision = true;
-					// printf("Collision with %.2f, %.2f\n", coll2.x, coll2.y);
-					// collisionPoints->Vtx().push_back(coll2);
-					// collision_times.push_back(t2);
 				}
 			}
 		}
 
 		return had_collision;
-		// collisionPoints->updateGPU();
 	}
 };
 
 class BallApp : public glApp {
 
-	CatmullRomSpline* spline;
-	Ball* ball;
+	CatmullRomSpline* spline = nullptr;
+	std::vector<Ball> balls;
+	Ball* ball = nullptr;
 	GPUProgram* gpuProgram = nullptr;
-	Geometry<vec2>* testpoints;
-	Geometry<vec2>* collisionpoints;
+
 	// nincs benne OpenGL hívás
 	Camera2D camera = Camera2D(vec2(0, 0), vec2(50, 50));
 
@@ -405,13 +326,21 @@ public:
 		return vec2(2.0f * (pX - vpX) / vpWidth - 1, 2.0f * (pY - vpY) / vpHeight - 1);
 	}
 	void onMousePressed(MouseButton button, int pX, int pY) {
-		if (button != MOUSE_LEFT) return;
-
-		vec2 clicked = PixelToNDC(pX, pY);
-		vec4 translated = camera.Vinv() * camera.Pinv() * vec4(clicked.x, clicked.y, 0, 1);
-		spline->addControlPoint(vec2(translated.x, translated.y));
+		if (button == MOUSE_LEFT){
+			vec2 clicked = PixelToNDC(pX, pY);
+			vec4 translated = camera.Vinv() * camera.Pinv() * vec4(clicked.x, clicked.y, 0, 1);
+			spline->addControlPoint(vec2(translated.x, translated.y));
+		}
+		if(button == MOUSE_RIGHT){
+			printf("Pressed right button.");
+		}
 
 		refreshScreen();
+	}
+	void onMouseReleased(MouseButton button, int pX, int pY){
+		if(button == MOUSE_RIGHT){
+			printf("Released right button.");
+		}
 	}
 	BallApp() : glApp("Ball App") {}
 
@@ -425,37 +354,8 @@ public:
 		glLineWidth(3);
 		glPointSize(10);
 
-		// elég itt beállítani, mert úgy se változik a program alatt
-		mat4 MVP = camera.P() * camera.V();
-		gpuProgram->setUniform(MVP, "MVP");
-
 		spline = new CatmullRomSpline();
-		// a segítőkész sarkok
-		// spline->addControlPoint(vec2(20.0, 10.0));
-		// spline->addControlPoint(vec2(10.0, 15.0));
-		// spline->addControlPoint(vec2(-15.0, 15.0));
-		// spline->addControlPoint(vec2(-20.0, -15.0));
-		// spline->addControlPoint(vec2(10, 10));
-
 		ball = new Ball(vec2(-10, 10), vec2(3.5, 10));
-		testpoints = new Geometry<vec2>();
-		collisionpoints = new Geometry<vec2>();
-
-
-		// spline->addControlPoint(vec2(-10, 10));
-		// spline->addControlPoint(vec2(-6.5, 20));
-		// spline->addControlPoint(vec2(-6.5, 10));
-
-
-		testpoints->Vtx().push_back(vec2(10, 10));
-		testpoints->Vtx().push_back(vec2(-10, -15));
-
-		// vec2 a = testpoints->Vtx()[0];
-		// vec2 b = testpoints->Vtx()[1];
-		ball->collideWithLineSegment(testpoints->Vtx()[0], testpoints->Vtx()[1], 1.0, collisionpoints);
-
-		testpoints->updateGPU();
-		collisionpoints->updateGPU();
 	}
 
 	void onDisplay() {
@@ -464,30 +364,10 @@ public:
 
 		spline->Draw(gpuProgram, camera);
 		ball->Draw(gpuProgram, camera);
-
-		gpuProgram->setUniform(camera.P()*camera.V(), "MVP");
-		testpoints->Draw(gpuProgram, GL_POINTS, vec3(0, 1, 1));
-		collisionpoints->Draw(gpuProgram, GL_POINTS, vec3(1, 0, 0));
-		Geometry<vec2> test;
-		for(auto e : spline->draw_cps.Vtx()){
-			test.Vtx().push_back(e);
-		}
-		test.updateGPU();
-		test.Draw(gpuProgram, GL_POINTS, vec3(1, 0, 1));
-	}
-
-	void onKeyboard(int key) {
-		switch (key) {
-		case 'p':
-			break;
-		default:
-			return;
-		}
 	}
 
 	void onTimeElapsed(float startTime, float endTime){
-		// printf("start: %f\nend: %f\ndelta: %f\n", startTime, endTime, endTime-startTime);
-		ball->updateFromTime(endTime-startTime, &spline->draw_curve.Vtx(), collisionpoints);
+		ball->updateFromTime(endTime-startTime, &spline->draw_curve.Vtx());
 		refreshScreen();
 	}
 };
