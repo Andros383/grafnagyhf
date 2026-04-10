@@ -34,8 +34,11 @@
 // VIGYÁZZ!!! Includeolgat a zed
 #include "framework.h"
 #include <asm-generic/errno.h>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <execution>
+#include <thread>
 #include <vector>
 
 // diasorról másolva
@@ -213,14 +216,15 @@ public:
 };
 
 class Ball: Geometry<vec2>{
-	vec2 pos;
-	vec2 startpos, v0;
+	vec2 pos, v0;
 	const vec2 g = vec2(0, -5);
+
+	float collision_time;
 
 	constexpr static float radius = 1.0;
 public:
 	Ball(vec2 pos, vec2 v0){
-		this->startpos = pos;
+		this->pos = pos;
 		this->v0 = v0;
 
 		const int nVertices = 100;
@@ -230,15 +234,6 @@ public:
 		}
 		updateGPU();
 	}
-	// Lehet nem így kell, mert nem az elejétől kéne számítani, hanem a deltákból?
-	void updateFromTime(float dt, std::vector<vec2>* spline){
-
-
-		startpos = startpos + dt*v0 + dt*dt*g/2;
-		v0 = v0 + dt*g;
-		pos = startpos;
-		// pos = startpos + dt*v0 + dt*dt*g/2;
-	}
 	void Draw(GPUProgram *prog, Camera2D& camera){
 		mat4 MVP = translate(vec3(pos.x, pos.y, 0));
 		MVP = camera.P()*camera.V()*MVP;
@@ -246,7 +241,77 @@ public:
 		// lehet más a szín?
 		Geometry<vec2>::Draw(prog, GL_TRIANGLE_FAN, vec3(0, 0, 1));
 	}
-	float collideWithLineSegment(vec2 line_start, vec2 line_end, float maxT, Geometry<vec2>* collisionPoints){
+	// Lehet nem így kell, mert nem az elejétől kéne számítani, hanem a deltákból?
+	void updateFromTime(float maxT, std::vector<vec2>* spline, Geometry<vec2>* collisionPoints){
+		// TODO NEM STATIC HANEM A BALL-NAK TAGVÁLTOZÓJA
+		static int fordulasos_updateok = 0;
+		bool voltfordulas = false;
+		static int perv_collision_id = -1;
+		while (true) {
+			int collision_id = -1;
+			collision_time = maxT;
+
+			if(!spline->empty()){
+				// ide a collision checkek
+				for(size_t i = 0; i < spline->size()-1; i++){
+					// kétszer ne ütközzön ugyan azzal
+					if(i == perv_collision_id) continue;
+
+					vec2 line_start = (*spline)[i];
+					vec2 line_end = (*spline)[i+1];
+					if(this->collideWithLineSegment(line_start, line_end, maxT, collisionPoints)){
+						collision_id = i;
+					}
+				}
+
+				if(perv_collision_id != spline->size()){
+					if(this->collideWithLineSegment((*spline)[spline->size()-1], (*spline)[0], maxT, collisionPoints)){
+						collision_id = spline->size();
+					}
+				}
+
+			}
+			// felzárkóztatni collision time-ig
+			pos = pos + collision_time*v0 + collision_time*collision_time*g/2;
+			v0 = v0 + collision_time*g;
+
+			// megtörtént az ütközés, max time csökken
+			maxT = maxT - collision_time;
+
+			// ha nem volt ütközés, akkor a collision time dt volt, OK
+			if(collision_id == -1) break;
+
+			// elmentjük, valójában kivel ütközött
+			perv_collision_id = collision_id;
+
+			vec2 collision_dirvec = vec2(NAN, NAN);
+
+			if(collision_id == spline->size()){
+				collision_dirvec = (*spline)[spline->size()-1] - (*spline)[0];
+			}else {
+				collision_dirvec = (*spline)[collision_id] - (*spline)[collision_id+1];
+			}
+
+			printf("Fennmaradó maxT: %f\n", maxT);
+			printf("FORDUL %.2f, %.2f\n", v0.x, v0.y);
+			printf("%f, %f\n", collision_dirvec.x, collision_dirvec.y);
+			// volt ütközés, a frissített v0-t át kell forgatni
+			vec2 paralell = (dot(v0, collision_dirvec) / dot(collision_dirvec, collision_dirvec)) * collision_dirvec;
+			vec2 perpend = v0 - paralell;
+
+			v0 = paralell - perpend;
+			printf("FORDUL2 %.2f, %.2f\n", v0.x, v0.y);
+			voltfordulas = true;
+		}
+
+		if(voltfordulas){
+			printf("\n");
+			fordulasos_updateok++;
+		}
+
+	}
+	// kiszámítja a metszéspontot, beállítja a közös változóban, hogy milyen t-vel ütközik, és ha ütközött, igazat ad vissza
+	bool collideWithLineSegment(vec2 line_start, vec2 line_end, float maxT, Geometry<vec2>* collisionPoints){
 		// MAJD MINDENKÉPP LEGYEN BENNE, HOGY LINE_LOOP ÉS KELL FELVENNI ITT KÜLÖN AZ UTOLSÓT, AMIKOR EZT A FÜGGVÉNYT MEGHÍVJUK
 		vec2 dirvec = line_end-line_start;
 		vec2 normvec = vec2(-dirvec.y, dirvec.x);
@@ -261,50 +326,62 @@ public:
 
 		float A = 0.5*g.y*lineB;
 		float B = v0.y*lineB + v0.x*lineA;
-		float C = lineA*startpos.x + lineB*startpos.y + lineC;
+		float C = lineA*pos.x + lineB*pos.y + lineC;
 
 		std::vector<float> collision_times;
 
 		float D = B * B - 4 * A * C;
 		collisionPoints->Vtx().clear();
+
+		bool had_collision = false;
 		if (D < 0){
 			// nincs collision point
-			// return NAN;
 		}else if (D == 0) {
 			float t = (-B) / (2 * A);
 			collision_times.push_back(t);
 
-			vec2 coll = startpos + t*v0 + t*t*g/2;
-			collisionPoints->Vtx().push_back(coll);
-
-			printf("%.2f, %.2f\n", coll.x, coll.y);
+			if(0 < t && t<=collision_time){
+				collision_time = t;
+				// collision_dirvec = dirvec;
+				had_collision = true;
+				// vec2 coll = pos + t*v0 + t*t*g/2;
+				// printf("Collision with %.2f, %.2f\n", coll.x, coll.y);
+				// collisionPoints->Vtx().push_back(coll);
+			}
 		}
 		else
 		{
 			float t1 = (-B + sqrt(D)) / (2 * A);
 			float t2 = (-B - sqrt(D)) / (2 * A);
-			vec2 coll1 = startpos + t1*v0 + t1*t1*g/2;
-			vec2 coll2 = startpos + t2*v0 + t2*t2*g/2;
+			vec2 coll1 = pos + t1*v0 + t1*t1*g/2;
+			vec2 coll2 = pos + t2*v0 + t2*t2*g/2;
 
 			float xmin = fmin(line_start.x, line_end.x);
 			float xmax = fmax(line_start.x, line_end.x);
 			if(xmin <= coll1.x && coll1.x <= xmax){
-				collisionPoints->Vtx().push_back(coll1);
-				collision_times.push_back(t1);
+				if(0 < t1 && t1 <= maxT){
+					collision_time = t1;
+					// collision_dirvec = dirvec;
+					had_collision = true;
+					// printf("Collision with %.2f, %.2f\n", coll1.x, coll1.y);
+					// collisionPoints->Vtx().push_back(coll1);
+					// collision_times.push_back(t1);
+				}
 			}
 			if(xmin <= coll2.x && coll2.x <= xmax){
-				collisionPoints->Vtx().push_back(coll2);
-				collision_times.push_back(t2);
+				if(0 < t2 && t2 <= maxT){
+					collision_time = t2;
+					// collision_dirvec = dirvec;
+					had_collision = true;
+					// printf("Collision with %.2f, %.2f\n", coll2.x, coll2.y);
+					// collisionPoints->Vtx().push_back(coll2);
+					// collision_times.push_back(t2);
+				}
 			}
-
-
-			printf("%.2f, %.2f\n", coll1.x, coll1.y);
-			printf("%.2f, %.2f\n", coll2.x, coll2.y);
 		}
 
+		return had_collision;
 		// collisionPoints->updateGPU();
-		printf("ASD\n");
-		return 1.0;
 	}
 };
 
@@ -364,6 +441,12 @@ public:
 		testpoints = new Geometry<vec2>();
 		collisionpoints = new Geometry<vec2>();
 
+
+		spline->addControlPoint(vec2(-10, 10));
+		spline->addControlPoint(vec2(-6.5, 20));
+		spline->addControlPoint(vec2(-6.5, 10));
+
+
 		testpoints->Vtx().push_back(vec2(10, 10));
 		testpoints->Vtx().push_back(vec2(-10, -15));
 
@@ -385,6 +468,12 @@ public:
 		gpuProgram->setUniform(camera.P()*camera.V(), "MVP");
 		testpoints->Draw(gpuProgram, GL_POINTS, vec3(0, 1, 1));
 		collisionpoints->Draw(gpuProgram, GL_POINTS, vec3(1, 0, 0));
+		Geometry<vec2> test;
+		for(auto e : spline->draw_cps.Vtx()){
+			test.Vtx().push_back(e);
+		}
+		test.updateGPU();
+		test.Draw(gpuProgram, GL_POINTS, vec3(1, 0, 1));
 	}
 
 	void onKeyboard(int key) {
@@ -398,7 +487,7 @@ public:
 
 	void onTimeElapsed(float startTime, float endTime){
 		// printf("start: %f\nend: %f\ndelta: %f\n", startTime, endTime, endTime-startTime);
-		ball->updateFromTime(endTime-startTime, &spline->draw_cps.Vtx());
+		ball->updateFromTime(endTime-startTime, &spline->draw_curve.Vtx(), collisionpoints);
 		refreshScreen();
 	}
 };
