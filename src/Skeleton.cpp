@@ -442,9 +442,9 @@ public:
 		collisionpoints = new Geometry<vec2>();
 
 
-		spline->addControlPoint(vec2(-10, 10));
-		spline->addControlPoint(vec2(-6.5, 20));
-		spline->addControlPoint(vec2(-6.5, 10));
+		// spline->addControlPoint(vec2(-10, 10));
+		// spline->addControlPoint(vec2(-6.5, 20));
+		// spline->addControlPoint(vec2(-6.5, 10));
 
 
 		testpoints->Vtx().push_back(vec2(10, 10));
