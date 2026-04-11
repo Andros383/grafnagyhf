@@ -36,22 +36,34 @@
 class Camera2D {
 	vec2 wCenter;
 	vec2 wSize;
+	int vpX, vpY, vpWidth, vpHeight;
 public:
-	Camera2D(vec2 wCenter, vec2 wSize) {
+	Camera2D(vec2 wCenter, vec2 wSize, int vpX, int vpY, int vpWidth, int vpHeight) {
 		this->wCenter = wCenter;
 		this->wSize = wSize;
+		this->vpX = vpX;
+		this->vpY = vpY;
+		this->vpWidth = vpWidth;
+		this->vpHeight = vpHeight;
 	}
 	mat4 V() {
 		return translate(vec3(-wCenter.x, -wCenter.y, 0));
 	}
-	mat4 P() { // projection matrix
+	mat4 P() {
 		return scale(vec3(2 / wSize.x, 2 / wSize.y, 1));
 	}
-	mat4 Vinv() { // inverse view matrix
+	mat4 Vinv() {
 		return translate(vec3(wCenter.x, wCenter.y, 0));
 	}
-	mat4 Pinv() { // inverse projection matrix
+	mat4 Pinv() {
 		return scale(vec3(wSize.x / 2, wSize.y / 2, 1));
+	}
+
+	vec2 convertClick(int pX, int pY) {
+		pY = vpHeight - pY;
+		vec2 clicked =  vec2(2.0f * (pX - vpX) / vpWidth - 1, 2.0f * (pY - vpY) / vpHeight - 1);
+		vec4 translated = this->Vinv() * this->Pinv() * vec4(clicked.x, clicked.y, 0, 1);
+		return vec2(translated.x, translated.y);
 	}
 };
 
@@ -85,13 +97,13 @@ const int winWidth = 600, winHeight = 600;
 
 class CatmullRomSpline {
 public:
-	Geometry<vec2>  draw_curve; // kirajzolt töröttvonal pontjai, ezt használjuk majd ütközésszámításhoz
-	Geometry<vec2>  draw_cps; // megjelenített kontrollpontok
-	vec2 a0, a1, a2, a3; // polinom együtthatók
-	float segment_tau = 0; // tau a szegmens kezdetétől
+	Geometry<vec2>  draw_curve;
+	Geometry<vec2>  draw_cps;
+	vec2 a0, a1, a2, a3;
+	float segment_tau = 0;
 
-	std::vector<vec2> cps; // számításhoz használt csomópontok
-	std::vector<float> ts; // csomópontokhoz tartozó tau értékek
+	std::vector<vec2> cps;
+	std::vector<float> ts;
 
 	void Hermite(vec2 p0, vec2 v0, float t0, vec2 p1, vec2 v1, float t1, float t) {
 		a0 = p0;
@@ -103,17 +115,14 @@ public:
 	void update_data() {
 		cps.clear();
 
-		// az első pontnak kell az utolsó, hogy lehessen sebességet számítani
 		cps.push_back(draw_cps.Vtx()[draw_cps.Vtx().size() - 1]);
 
 		for (vec2 elem : draw_cps.Vtx()) {
 			cps.push_back(elem);
 		}
 
-		// Ez az utolsó pont, ami valójában az első
 		cps.push_back(draw_cps.Vtx()[0]);
 
-		// Ez az utolsó pont utáni, valójában a második, hogy lehessen sebességet számítani
 		cps.push_back(draw_cps.Vtx()[1]);
 
 		ts.clear();
@@ -129,8 +138,8 @@ public:
 
 		draw_curve.Vtx().clear();
 		if (draw_cps.Vtx().size() >= 3) {
-			const int nVertices = 100; // A közelítő töröttvonal csúcsszáma
-			for (int i = 0; i < nVertices; i++) {	// Tesszelláció
+			const int nVertices = 100;
+			for (int i = 0; i < nVertices; i++) {
 				float tau = tauMin + (float)i * (tauMax - tauMin) / nVertices;
 				draw_curve.Vtx().push_back(r(tau));
 			}
@@ -138,7 +147,6 @@ public:
 			draw_curve.updateGPU();
 		}
 	}
-	// megkeresi a megfelelő polinomrészletet, és kitölteti a Hermite-al az értékeket
 	void Polynom(float tau) {
 		for (size_t i = 1; i < cps.size() - 2; i++) {
 			if (ts[i] <= tau && tau <= ts[i + 1]) {
@@ -151,7 +159,7 @@ public:
 			}
 		}
 	}
-	vec2 r(float tau) { // Catmull-Rom spline
+	vec2 r(float tau) {
 		Polynom(tau);
 		return ((a3 * segment_tau + a2) * segment_tau + a1) * segment_tau + a0;
 	}
@@ -200,16 +208,13 @@ public:
 
 		Geometry<vec2>::Draw(prog, GL_TRIANGLE_FAN, vec3(0, 0, 1));
 	}
-	// Lehet nem így kell, mert nem az elejétől kéne számítani, hanem a deltákból?
 	void updateFromTime(float maxT, std::vector<vec2>* spline) {
 		while (true) {
-			size_t collision_id = -1;
+			int collision_id = -1;
 			collision_time = maxT;
 
 			if (!spline->empty()) {
-				// ide a collision checkek
 				for (size_t i = 0; i < spline->size() - 1; i++) {
-					// kétszer ne ütközzön ugyan azzal
 					if (i == perv_collision_id) continue;
 
 					vec2 line_start = (*spline)[i];
@@ -226,17 +231,13 @@ public:
 				}
 
 			}
-			// felzárkóztatni collision time-ig
 			pos = pos + collision_time * v0 + collision_time * collision_time * g / 2;
 			v0 = v0 + collision_time * g;
 
-			// megtörtént az ütközés, max time csökken
 			maxT = maxT - collision_time;
 
-			// ha nem volt ütközés, akkor a collision time dt volt, OK
 			if (collision_id == -1) break;
 
-			// elmentjük, valójában kivel ütközött
 			perv_collision_id = collision_id;
 
 			vec2 collision_dirvec = vec2(NAN, NAN);
@@ -248,19 +249,16 @@ public:
 				collision_dirvec = (*spline)[collision_id] - (*spline)[collision_id + 1];
 			}
 
-			// volt ütközés, a frissített v0-t át kell forgatni
 			vec2 paralell = (dot(v0, collision_dirvec) / dot(collision_dirvec, collision_dirvec)) * collision_dirvec;
 			vec2 perpend = v0 - paralell;
 
 			v0 = paralell - perpend;
 		}
 	}
-	// kiszámítja a metszéspontot, beállítja a közös változóban, hogy milyen t-vel ütközik, és ha ütközött, igazat ad vissza
 	bool collideWithLineSegment(vec2 line_start, vec2 line_end, float maxT) {
 		vec2 dirvec = line_end - line_start;
 		vec2 normvec = vec2(-dirvec.y, dirvec.x);
 
-		// egyenes egyenlete Ax + By + C = 0
 		float lineA = normvec.x;
 		float lineB = normvec.y;
 		float lineC = -1 * dot(normvec, line_start);
@@ -316,25 +314,17 @@ class BallApp : public glApp {
 	Ball* current_ball = nullptr;
 	GPUProgram* gpuProgram = nullptr;
 
-	// nincs benne OpenGL hívás
-	Camera2D camera = Camera2D(vec2(0, 0), vec2(50, 50));
-
-	// ezzel mi lesz?
 	int vpX = 0, vpY = 0, vpWidth = winWidth, vpHeight = winHeight;
 
+	Camera2D camera = Camera2D(vec2(0, 0), vec2(50, 50), vpX, vpY, vpWidth, vpHeight);
+
 public:
-	// ezt asszem át kell írni majd hogy a MVP-vel dolgozzon?
-	vec2 PixelToNDC(int pX, int pY) {
-		pY = winHeight - pY;
-		return vec2(2.0f * (pX - vpX) / vpWidth - 1, 2.0f * (pY - vpY) / vpHeight - 1);
-	}
 	void onMousePressed(MouseButton button, int pX, int pY) {
 
 		if (button != MOUSE_LEFT && button != MOUSE_RIGHT) return;
 
-		vec2 clicked = PixelToNDC(pX, pY);
-		vec4 translated = camera.Vinv() * camera.Pinv() * vec4(clicked.x, clicked.y, 0, 1);
-		vec2 world_clicked = vec2(translated.x, translated.y);
+		vec2 world_clicked = camera.convertClick(pX, pY);
+
 		if (button == MOUSE_LEFT) {
 			spline->addControlPoint(world_clicked);
 		}
@@ -346,9 +336,7 @@ public:
 	void onMouseReleased(MouseButton button, int pX, int pY) {
 		if (button != MOUSE_RIGHT) return;
 
-		vec2 clicked = PixelToNDC(pX, pY);
-		vec4 translated = camera.Vinv() * camera.Pinv() * vec4(clicked.x, clicked.y, 0, 1);
-		vec2 world_clicked = vec2(translated.x, translated.y);
+		vec2 world_clicked = camera.convertClick(pX, pY);
 
 		current_ball->v0 = vec2(current_ball->pos - world_clicked);
 		current_ball->pos = world_clicked;
@@ -360,10 +348,8 @@ public:
 	void onInitialization() {
 		gpuProgram = new GPUProgram(vertSource, fragSource);
 
-		// Ki kell venni a *2-t
 		glViewport(0, 0, winHeight, winWidth);
 
-		// ez nem volt specifikálva, megnézni!
 		glLineWidth(3);
 		glPointSize(10);
 
