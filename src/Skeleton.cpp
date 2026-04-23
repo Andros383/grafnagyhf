@@ -2,45 +2,8 @@
 // Textúra leképzés
 //=============================================================================================
 #include "framework.h"
-<<<<<<< HEAD
-
-class Camera2D {
-	vec2 wCenter;
-	vec2 wSize;
-	int vpX, vpY, vpWidth, vpHeight;
-public:
-	Camera2D(vec2 wCenter, vec2 wSize, int vpX, int vpY, int vpWidth, int vpHeight) {
-		this->wCenter = wCenter;
-		this->wSize = wSize;
-		this->vpX = vpX;
-		this->vpY = vpY;
-		this->vpWidth = vpWidth;
-		this->vpHeight = vpHeight;
-	}
-	mat4 V() {
-		return translate(vec3(-wCenter.x, -wCenter.y, 0));
-	}
-	mat4 P() {
-		return scale(vec3(2 / wSize.x, 2 / wSize.y, 1));
-	}
-	mat4 Vinv() {
-		return translate(vec3(wCenter.x, wCenter.y, 0));
-	}
-	mat4 Pinv() {
-		return scale(vec3(wSize.x / 2, wSize.y / 2, 1));
-	}
-
-	vec2 convertClick(int pX, int pY) {
-		pY = vpHeight - pY;
-		vec2 clicked =  vec2(2.0f * (pX - vpX) / vpWidth - 1, 2.0f * (pY - vpY) / vpHeight - 1);
-		vec4 translated = this->Vinv() * this->Pinv() * vec4(clicked.x, clicked.y, 0, 1);
-		return vec2(translated.x, translated.y);
-	}
-};
-=======
 #include <cstdio>
 #include <cstdlib>
->>>>>>> 7417295 (Harmadik házi kezdete, nem fogok új repót csinálni mert lusta vagyok.)
 
 const char* vertSource = R"(
 	#version 330
@@ -72,258 +35,6 @@ const char * vertSourceText = R"(
 	layout(location = 0) in vec2 vertexXY;	// Attrib Array 0
 	layout(location = 1) in vec2 vertexUV;			// Attrib Array 1
 
-<<<<<<< HEAD
-class CatmullRomSpline {
-public:
-	Geometry<vec2>  draw_curve;
-	Geometry<vec2>  draw_cps;
-	vec2 a0, a1, a2, a3;
-	float segment_tau = 0;
-
-	std::vector<vec2> cps;
-	std::vector<float> ts;
-
-	void Hermite(vec2 p0, vec2 v0, float t0, vec2 p1, vec2 v1, float t1, float t) {
-		a0 = p0;
-		a1 = v0;
-		a2 = (3 * (p1 - p0) / pow(t1 - t0, 2)) - ((v1 + 2 * v0) / (t1 - t0));
-		a3 = (2 * (p0 - p1) / pow(t1 - t0, 3)) + ((v1 + v0) / pow(t1 - t0, 2));
-		segment_tau = t - t0;
-	};
-	void update_data() {
-		cps.clear();
-
-		cps.push_back(draw_cps.Vtx()[draw_cps.Vtx().size() - 1]);
-
-		for (vec2 elem : draw_cps.Vtx()) {
-			cps.push_back(elem);
-		}
-
-		cps.push_back(draw_cps.Vtx()[0]);
-
-		cps.push_back(draw_cps.Vtx()[1]);
-
-		ts.clear();
-		ts.push_back(0);
-		for (size_t i = 1; i < cps.size(); i++) {
-			ts.push_back(ts[i - 1] + length(cps[i] - cps[i - 1]));
-		}
-	}
-	void update() {
-		update_data();
-		float tauMax = ts[ts.size() - 2];
-		float tauMin = ts[1];
-
-		draw_curve.Vtx().clear();
-		if (draw_cps.Vtx().size() >= 3) {
-			const int nVertices = 100;
-			for (int i = 0; i < nVertices; i++) {
-				float tau = tauMin + (float)i * (tauMax - tauMin) / nVertices;
-				draw_curve.Vtx().push_back(r(tau));
-			}
-			draw_curve.Vtx().push_back(r(tauMax - 0.0001f));
-			draw_curve.updateGPU();
-		}
-	}
-	void Polynom(float tau) {
-		for (size_t i = 1; i < cps.size() - 2; i++) {
-			if (ts[i] <= tau && tau <= ts[i + 1]) {
-				vec2 v0 = 0.5f * (((cps[i + 1] - cps[i]) / (ts[i + 1] - ts[i])) + ((cps[i] - cps[i - 1]) / (ts[i] - ts[i - 1])));
-				i++;
-				vec2 v1 = 0.5f * (((cps[i + 1] - cps[i]) / (ts[i + 1] - ts[i])) + ((cps[i] - cps[i - 1]) / (ts[i] - ts[i - 1])));
-				i--;
-				Hermite(cps[i], v0, ts[i], cps[i + 1], v1, ts[i + 1], tau);
-				return;
-			}
-		}
-	}
-	vec2 r(float tau) {
-		Polynom(tau);
-		return ((a3 * segment_tau + a2) * segment_tau + a1) * segment_tau + a0;
-	}
-	void Draw(GPUProgram* gpuProgram, Camera2D& camera) {
-		mat4 MVP = camera.P() * camera.V();
-		gpuProgram->setUniform(MVP, "MVP");
-		draw_curve.Draw(gpuProgram, GL_LINE_LOOP, vec3(1, 1, 0));
-		draw_cps.Draw(gpuProgram, GL_POINTS, vec3(1, 0, 0));
-	}
-	void addControlPoint(vec2 p) {
-		draw_cps.Vtx().push_back(p);
-		draw_cps.updateGPU();
-
-		if (draw_cps.Vtx().size() >= 3)
-			update();
-	}
-};
-
-class Ball : Geometry<vec2> {
-public:
-	vec2 pos, v0;
-	const vec2 g = vec2(0, -5);
-
-	float collision_time = -1;
-
-	int perv_collision_id = -1;
-
-	constexpr static float radius = 1.0;
-
-	Ball(vec2 pos, vec2 v0) {
-		this->pos = pos;
-		this->v0 = v0;
-
-		const int nVertices = 100;
-		for (int i = 0; i < nVertices; i++) {
-			float phi = i * 2.0f * (float)M_PI / nVertices;
-			Vtx().push_back(vec2(radius * cosf(phi), radius * sinf(phi)));
-		}
-		updateGPU();
-	}
-	void Draw(GPUProgram* prog, Camera2D& camera) {
-		mat4 MVP = translate(vec3(pos.x, pos.y, 0));
-		MVP = camera.P() * camera.V() * MVP;
-
-		prog->setUniform(MVP, "MVP");
-
-		Geometry<vec2>::Draw(prog, GL_TRIANGLE_FAN, vec3(0, 0, 1));
-	}
-	void updateFromTime(float maxT, std::vector<vec2>* spline) {
-		while (true) {
-			int collision_id = -1;
-			collision_time = maxT;
-
-			if (!spline->empty()) {
-				for (size_t i = 0; i < spline->size() - 1; i++) {
-					if (i == perv_collision_id) continue;
-
-					vec2 line_start = (*spline)[i];
-					vec2 line_end = (*spline)[i + 1];
-					if (this->collideWithLineSegment(line_start, line_end, maxT)) {
-						collision_id = i;
-					}
-				}
-
-				if (perv_collision_id != spline->size()) {
-					if (this->collideWithLineSegment((*spline)[spline->size() - 1], (*spline)[0], maxT)) {
-						collision_id = spline->size();
-					}
-				}
-
-			}
-			pos = pos + collision_time * v0 + collision_time * collision_time * g / 2;
-			v0 = v0 + collision_time * g;
-
-			maxT = maxT - collision_time;
-
-			if (collision_id == -1) break;
-
-			perv_collision_id = collision_id;
-
-			vec2 collision_dirvec = vec2(NAN, NAN);
-
-			if (collision_id == spline->size()) {
-				collision_dirvec = (*spline)[spline->size() - 1] - (*spline)[0];
-			}
-			else {
-				collision_dirvec = (*spline)[collision_id] - (*spline)[collision_id + 1];
-			}
-
-			vec2 paralell = (dot(v0, collision_dirvec) / dot(collision_dirvec, collision_dirvec)) * collision_dirvec;
-			vec2 perpend = v0 - paralell;
-
-			v0 = paralell - perpend;
-		}
-	}
-	bool collideWithLineSegment(vec2 line_start, vec2 line_end, float maxT) {
-		vec2 dirvec = line_end - line_start;
-		vec2 normvec = vec2(-dirvec.y, dirvec.x);
-
-		float lineA = normvec.x;
-		float lineB = normvec.y;
-		float lineC = -1 * dot(normvec, line_start);
-
-		float A = 0.5 * g.y * lineB;
-		float B = v0.y * lineB + v0.x * lineA;
-		float C = lineA * pos.x + lineB * pos.y + lineC;
-
-		float D = B * B - 4 * A * C;
-
-		bool had_collision = false;
-		if (D < 0) {
-
-		}
-		else if (D == 0) {
-			float t = (-B) / (2 * A);
-			if (0 < t && t <= collision_time) {
-				collision_time = t;
-				had_collision = true;
-			}
-		}
-		else
-		{
-			float t1 = (-B + sqrt(D)) / (2 * A);
-			float t2 = (-B - sqrt(D)) / (2 * A);
-			vec2 coll1 = pos + t1 * v0 + t1 * t1 * g / 2;
-			vec2 coll2 = pos + t2 * v0 + t2 * t2 * g / 2;
-
-			float xmin = fmin(line_start.x, line_end.x);
-			float xmax = fmax(line_start.x, line_end.x);
-			if (xmin <= coll1.x && coll1.x <= xmax) {
-				if (0 < t1 && t1 <= maxT) {
-					collision_time = t1;
-					had_collision = true;
-				}
-			}
-			if (xmin <= coll2.x && coll2.x <= xmax) {
-				if (0 < t2 && t2 <= maxT) {
-					collision_time = t2;
-					had_collision = true;
-				}
-			}
-		}
-
-		return had_collision;
-	}
-};
-
-class BallApp : public glApp {
-
-	CatmullRomSpline* spline = nullptr;
-	std::vector<Ball*> balls;
-	Ball* current_ball = nullptr;
-	GPUProgram* gpuProgram = nullptr;
-
-	int vpX = 0, vpY = 0, vpWidth = winWidth, vpHeight = winHeight;
-
-	Camera2D camera = Camera2D(vec2(0, 0), vec2(50, 50), vpX, vpY, vpWidth, vpHeight);
-
-public:
-	void onMousePressed(MouseButton button, int pX, int pY) {
-
-		if (button != MOUSE_LEFT && button != MOUSE_RIGHT) return;
-
-		vec2 world_clicked = camera.convertClick(pX, pY);
-
-		if (button == MOUSE_LEFT) {
-			spline->addControlPoint(world_clicked);
-		}
-		if (button == MOUSE_RIGHT) {
-			current_ball = new Ball(world_clicked, vec2(0, 0));
-		}
-		refreshScreen();
-	}
-	void onMouseReleased(MouseButton button, int pX, int pY) {
-		if (button != MOUSE_RIGHT) return;
-
-		vec2 world_clicked = camera.convertClick(pX, pY);
-
-		current_ball->v0 = vec2(current_ball->pos - world_clicked);
-		current_ball->pos = world_clicked;
-		balls.push_back(current_ball);
-		current_ball = nullptr;
-	}
-	BallApp() : glApp("Ball App") {}
-
-=======
 	out vec2 texCoord;								// output attribute
 
 	void main() {
@@ -459,22 +170,13 @@ class TextureApp : public glApp {
 	bool mousePressed = false;
 public:
 	TextureApp() : glApp(3, 3, winWidth, winHeight, "Texturing") { }
->>>>>>> 7417295 (Harmadik házi kezdete, nem fogok új repót csinálni mert lusta vagyok.)
 	void onInitialization() {
 		gpuProgram = new GPUProgram(vertSource, fragSource);
 		gpuProgramText = new GPUProgram(vertSourceText, fragSourceText);
 		glClearColor(0, 0, 0, 0);     // háttér fekete
 
-<<<<<<< HEAD
-		glViewport(0, 0, winHeight, winWidth);
-
-=======
->>>>>>> 7417295 (Harmadik házi kezdete, nem fogok új repót csinálni mert lusta vagyok.)
 		glLineWidth(3);
 
-<<<<<<< HEAD
-		spline = new CatmullRomSpline();
-=======
 		uncompress();
 
 		wm = new WorldMap();
@@ -482,30 +184,8 @@ public:
 		line->Vtx().push_back(vec2(0, 0));
 		line->Vtx().push_back(vec2(1, 0));
 		line->updateGPU();
->>>>>>> 7417295 (Harmadik házi kezdete, nem fogok új repót csinálni mert lusta vagyok.)
 	}
 	void onDisplay() {
-<<<<<<< HEAD
-		glClearColor(0, 0, 0, 0);
-		glClear(GL_COLOR_BUFFER_BIT);
-
-		spline->Draw(gpuProgram, camera);
-
-		if (current_ball != nullptr) {
-			current_ball->Draw(gpuProgram, camera);
-		}
-
-		for (Ball* b : balls) {
-			b->Draw(gpuProgram, camera);
-		}
-	}
-
-	void onTimeElapsed(float startTime, float endTime) {
-		for (Ball* b : balls) {
-			b->updateFromTime(endTime - startTime, &spline->draw_curve.Vtx());
-		}
-
-=======
 		glClear(GL_COLOR_BUFFER_BIT); // törlés
 		glViewport(0, 0, winWidth, winHeight);
 		gpuProgramText->Use();
@@ -518,7 +198,6 @@ public:
 	void onMouseReleased(MouseButton button, int pX, int pY) {
 	}
 	void onMouseMotion(int pX, int pY) {
->>>>>>> 7417295 (Harmadik házi kezdete, nem fogok új repót csinálni mert lusta vagyok.)
 		refreshScreen();
 	}
 };
