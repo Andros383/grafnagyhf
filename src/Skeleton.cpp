@@ -2,32 +2,11 @@
 // Textúra leképzés
 //=============================================================================================
 #include "framework.h"
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
-
-const char* vertSource = R"(
-	#version 330
-    precision highp float;
-
-	layout(location = 0) in vec2 vertexPosition;
-
-	void main() {
-		gl_Position = vec4(vertexPosition, 0, 1);
-	}
-)";
-
-const char* fragSource = R"(
-	#version 330
-    precision highp float;
-
-	uniform vec3 color;
-	out vec4 fragmentColor;
-
-	void main() {
-		fragmentColor = vec4(color, 1);
-	}
-)";
-
+#include <functional>
+#include <ios>
 // csúcspont árnyaló
 const char * vertSourceText = R"(
 	#version 330
@@ -48,15 +27,40 @@ const char * fragSourceText = R"(
 	#version 330
 
 	uniform sampler2D textureUnit;
+	uniform bool texturing;
+	uniform vec3 color;
 
 	in vec2 texCoord;			// variable input: interpolated texture coordinates
 	out vec4 outColor;		// output that goes to the raster memory as told by glBindFragDataLocation
 
-	void main() { outColor = texture(textureUnit, texCoord); }
+	void main() {
+		if(texturing){
+			outColor = texture(textureUnit, texCoord);
+		}else{
+			outColor = vec4(color, 1);
+		}
+	}
 )";
 
+// print vec
+void pvec(vec2 v){
+	printf("(%.2f %.2f)\n", v.x, v.y);
+}
+void pvec(vec3 v){
+	printf("(%.2f %.2f %.2f)\n", v.x, v.y, v.z);
+}
+void pvec(vec4 v){
+	printf("(%.2f %.2f %.2f %.2f)\n", v.x, v.y, v.z, v.w);
+}
 
-const int winWidth = 960, winHeight = 540;
+template<typename T> T lerp(T a, T b, float t){
+	return a*(1-t) + t * b;
+}
+
+
+
+
+const int winWidth = 600, winHeight = 600;
 
 std::vector<int16_t> compressed_image = {2308, 13, 84, 5, 152, 17, 76, 17, 144, 29, 64, 25, 136, 45, 16, 5, 32, 29, 132, 65,
 4, 21, 8, 33, 128, 85, 12, 41, 120, 93, 4, 73, 20, 9, 52, 101, 4, 81, 4, 29, 12, 5,
@@ -77,7 +81,6 @@ std::vector<int16_t> compressed_image = {2308, 13, 84, 5, 152, 17, 76, 17, 144, 
 12, 5, 4, 5, 16, 217, 8, 17, 16, 913};
 
 std::vector<vec3> uncompressed_image;
-
 void uncompress(){
 	printf("Size of image: %lu\n", compressed_image.size());
 	for(int16_t elem : compressed_image){
@@ -124,6 +127,31 @@ void uncompress(){
 	printf("uncompressed size: %lu\n", uncompressed_image.size());
 }
 
+// input v = phi, theta
+// r = 1
+// beágyazó tér???
+vec3 sphere23d(vec2 v){
+	float x = sin(v.x)*cos(v.y);
+	float y = sin(v.x)*sin(v.y);
+	float z = cos(v.y);
+	return vec3(x, y, z);
+}
+
+// input v = phi, theta
+vec2 sphere2merc(vec2 v){
+	return vec2(v.x, log(tan(M_PI_4f + v.y /2)));
+}
+// output v = phi, theta
+vec2 merc2sphere(vec2 v){
+	float out;
+	out = v.y;
+	out = exp(out);
+	out = atan(out);
+	out = out - M_PI_4f;
+	out = out*2;
+	return vec2(v.x, out);
+}
+
 struct WorldMap {
 	unsigned int vao, vbo[2];	// vao és két vbo: geometria + uv
 	std::vector<vec2> vtx;	    // geometria a CPU-n
@@ -154,11 +182,40 @@ struct WorldMap {
 		glBufferData(GL_ARRAY_BUFFER, vtx.size() * sizeof(vec2), &vtx[0], GL_DYNAMIC_DRAW);
 	}
 	void Draw(GPUProgram* gpuProgram) {
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 		int textureUnit = 0; // textúra mintavevő egység
 		gpuProgram->setUniform(textureUnit, "textureUnit"); // türkisz nyíl
-		texture.Bind(textureUnit);                          // piros nyíl
+		texture.Bind(textureUnit);      		                    // piros nyíl
 		glBindVertexArray(vao);
 		glDrawArrays(GL_TRIANGLE_FAN, 0, 4);        // négyszög rajzolás
+	}
+
+	void valamiupdate()	{
+		for(int i = 0; i<uncompressed_image.size(); i++){
+			if((i+ i/64)%2 == 0){
+				if(uncompressed_image[i].x > 0) uncompressed_image[i].x = 0.5;
+				if(uncompressed_image[i].y > 0) uncompressed_image[i].y = 0.5;
+				if(uncompressed_image[i].z > 0) uncompressed_image[i].z = 0.5;
+			}
+		}
+		texture.updateTexture(64, 64, uncompressed_image);
+	}
+};
+
+struct Test{
+	// point stored as sphere coordinates
+	std::vector<vec2> points;
+	Geometry<vec2> drawPoints;
+
+	void addSpherePoint(vec2 p){
+		printf("added point ");
+		pvec(sphere2merc(p));
+		drawPoints.Vtx().push_back(sphere2merc(p));
+		drawPoints.updateGPU();
+	}
+
+	void Draw(GPUProgram* prog){
+		drawPoints.Draw(prog, GL_POINTS, vec3(1, 0, 0));
 	}
 };
 
@@ -166,34 +223,61 @@ class TextureApp : public glApp {
 	Geometry<vec2> *line;
 	WorldMap* wm;
 	GPUProgram* gpuProgram;
-	GPUProgram* gpuProgramText;
 	bool mousePressed = false;
+
+	Test* test;
+	// TODO: Legyen ez alapján a viewport
+	int vpX = 0, vpY = 0, vpWidth = winWidth, vpHeight = winHeight;
+	vec3 PixelToNDC(int pX, int pY) {
+		pY = winHeight - pY;
+		return vec3(2.0f * (pX - vpX) / vpWidth - 1, 2.0f * (pY - vpY) / vpHeight - 1, 1);
+	}
 public:
 	TextureApp() : glApp(3, 3, winWidth, winHeight, "Texturing") { }
 	void onInitialization() {
-		gpuProgram = new GPUProgram(vertSource, fragSource);
-		gpuProgramText = new GPUProgram(vertSourceText, fragSourceText);
+		gpuProgram = new GPUProgram(vertSourceText, fragSourceText);
 		glClearColor(0, 0, 0, 0);     // háttér fekete
 
+
+		// MEGNÉZNI A JÓT
 		glLineWidth(3);
+		glPointSize(5);
 
 		uncompress();
 
 		wm = new WorldMap();
 		line = new Geometry<vec2>;
+		test = new Test();
+
+		auto a = vec2(0.25, -M_PI_4f);
+		auto b = vec2(0.25, M_PI_4f);
+
+		for(int i = 0; i < 100; i++){
+			printf("i: %d\t", i);
+			auto v = lerp(a, b, (float)i/100);
+			pvec(v);
+			test->addSpherePoint(v);
+		}
+
+
+
 		line->Vtx().push_back(vec2(0, 0));
 		line->Vtx().push_back(vec2(1, 0));
 		line->updateGPU();
+		printf("\n");
 	}
 	void onDisplay() {
 		glClear(GL_COLOR_BUFFER_BIT); // törlés
 		glViewport(0, 0, winWidth, winHeight);
-		gpuProgramText->Use();
-		wm->Draw(gpuProgramText);
-		gpuProgram->Use();
+		gpuProgram->setUniform(true, "texturing");
+		wm->Draw(gpuProgram);
+		gpuProgram->setUniform(false, "texturing");
 		line->Draw(gpuProgram, GL_LINES, vec3(1, 0, 0));
+		test->Draw(gpuProgram);
 	}
 	void onMousePressed(MouseButton button, int pX, int pY) {
+		printf("asd\n");
+		wm->valamiupdate();
 	}
 	void onMouseReleased(MouseButton button, int pX, int pY) {
 	}
