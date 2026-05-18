@@ -1,289 +1,561 @@
 //=============================================================================================
-// Textúra leképzés
+// Computer Graphics Sample Program: 3D engine-let
+// Shader: Gouraud, Phong, NPR
+// Material: diffuse + Phong-Blinn
+// Texture: CPU-procedural
+// Geometry: sphere, tractricoid, torus, mobius, klein-bottle, boy, dini
+// Camera: perspective
+// Light: point or directional sources
 //=============================================================================================
-#include "framework.h"
 #include <cmath>
-#include <cstdio>
-#include <cstdlib>
-#include <functional>
-#include <ios>
-// csúcspont árnyaló
-const char * vertSourceText = R"(
-	#version 330
+const float OP_SYS_SCALE = 2.0;
 
-	layout(location = 0) in vec2 vertexXY;	// Attrib Array 0
-	layout(location = 1) in vec2 vertexUV;			// Attrib Array 1
+#include "framework.h"
 
-	out vec2 texCoord;								// output attribute
-
-	void main() {
-		texCoord = vertexUV;														// copy texture coordinates
-		gl_Position = vec4(vertexXY, 0, 1);
+//---------------------------
+template<class T> struct Dnum { // Dual numbers for automatic derivation
+//---------------------------
+	float f; // function value
+	T d;  // derivatives
+	Dnum(float f0 = 0, T d0 = T(0)) { f = f0, d = d0; }
+	Dnum operator+(Dnum r) { return Dnum(f + r.f, d + r.d); }
+	Dnum operator-(Dnum r) { return Dnum(f - r.f, d - r.d); }
+	Dnum operator*(Dnum r) {
+		return Dnum(f * r.f, f * r.d + d * r.f);
 	}
-)";
+	Dnum operator/(Dnum r) {
+		return Dnum(f / r.f, (r.f * d - r.d * f) / r.f / r.f);
+	}
+};
 
-// pixel árnyaló
-const char * fragSourceText = R"(
-	#version 330
+// Elementary functions prepared for the chain rule as well
+template<class T> Dnum<T> Exp(Dnum<T> g) { return Dnum<T>(expf(g.f), expf(g.f)*g.d); }
+template<class T> Dnum<T> Sin(Dnum<T> g) { return  Dnum<T>(sinf(g.f), cosf(g.f)*g.d); }
+template<class T> Dnum<T> Cos(Dnum<T>  g) { return  Dnum<T>(cosf(g.f), -sinf(g.f)*g.d); }
+template<class T> Dnum<T> Tan(Dnum<T>  g) { return Sin(g) / Cos(g); }
+template<class T> Dnum<T> Sinh(Dnum<T> g) { return  Dnum<T>(sinh(g.f), cosh(g.f)*g.d); }
+template<class T> Dnum<T> Cosh(Dnum<T> g) { return  Dnum<T>(cosh(g.f), sinh(g.f)*g.d); }
+template<class T> Dnum<T> Tanh(Dnum<T> g) { return Sinh(g) / Cosh(g); }
+template<class T> Dnum<T> Log(Dnum<T> g) { return  Dnum<T>(logf(g.f), g.d / g.f); }
+template<class T> Dnum<T> Pow(Dnum<T> g, float n) {
+	return  Dnum<T>(powf(g.f, n), n * powf(g.f, n - 1) * g.d);
+}
 
-	uniform sampler2D textureUnit;
-	uniform bool texturing;
-	uniform vec3 color;
+typedef Dnum<vec2> Dnum2;
 
-	in vec2 texCoord;			// variable input: interpolated texture coordinates
-	out vec4 outColor;		// output that goes to the raster memory as told by glBindFragDataLocation
+const int tessellationLevel = 100;
 
-	void main() {
-		if(texturing){
-			outColor = texture(textureUnit, texCoord);
-		}else{
-			outColor = vec4(color, 1);
+const int windowWidth = 600, windowHeight = 600;
+
+//---------------------------
+struct Camera { // 3D camera
+//---------------------------
+	vec3 wEye, wLookat, wVup;   // extrinsic
+	float fov, asp, fp, bp;		// intrinsic
+public:
+	Camera() {
+		asp = (float)windowWidth / windowHeight;
+		fov = 45.0f * (float)M_PI / 180.0f;
+		fp = 1; bp = 20;
+	}
+	mat4 V() { return lookAt(wEye, wLookat, wVup); }
+	mat4 P() { return perspective(fov, asp, fp, bp); }
+};
+
+//---------------------------
+struct Material {
+//---------------------------
+	vec3 kd, ks, ka;
+	float shininess;
+};
+
+//---------------------------
+struct Light {
+//---------------------------
+	vec3 La, Le;
+	vec4 wLightPos; // homogeneous coordinates, can be at ideal point
+};
+
+//---------------------------
+struct RenderState {
+//---------------------------
+	mat4	           MVP, M, Minv, V, P;
+	Material *         material;
+	std::vector<Light> lights;
+	Texture *          texture;
+	vec3	           wEye;
+};
+
+//---------------------------
+class Shader : public GPUProgram {
+//---------------------------
+public:
+	virtual void Bind(RenderState state) = 0;
+
+	void setUniformMaterial(const Material& material, const std::string& name) {
+		setUniform(material.kd, name + ".kd");
+		setUniform(material.ks, name + ".ks");
+		setUniform(material.ka, name + ".ka");
+		setUniform(material.shininess, name + ".shininess");
+	}
+
+	void setUniformLight(const Light& light, const std::string& name) {
+		setUniform(light.La, name + ".La");
+		setUniform(light.Le, name + ".Le");
+		setUniform(light.wLightPos, name + ".wLightPos");
+	}
+};
+
+//---------------------------
+class PhongShader : public Shader {
+//---------------------------
+	const char * vertexSource = R"(
+		#version 330 core
+		precision highp float;
+
+		struct Light {
+			vec3 La, Le;
+			vec4 wLightPos;
+		};
+
+		uniform mat4  MVP, M, Minv; // MVP, Model, Model-inverse
+		uniform Light[8] lights;    // light sources
+		uniform int   nLights;
+		uniform vec3  wEye;         // pos of eye
+
+		layout(location = 0) in vec3  vtxPos;            // pos in modeling space
+		layout(location = 1) in vec3  vtxNorm;      	 // normal in modeling space
+		layout(location = 2) in vec2  vtxUV;
+
+		out vec3 wNormal;		    // normal in world space
+		out vec3 wView;             // view in world space
+		out vec3 wLight[8];		    // light dir in world space
+		out vec2 texcoord;
+
+		void main() {
+			// gl_Position = vec4(vtxPos, 1) * MVP; // to NDC
+			gl_Position = MVP * vec4(vtxPos, 1); // Saját
+			// vectors for radiance computation
+			// vec4 wPos = vec4(vtxPos, 1) * M;
+			vec4 wPos = M * vec4(vtxPos, 1); // Saját
+			for(int i = 0; i < nLights; i++) {
+				wLight[i] = lights[i].wLightPos.xyz * wPos.w - wPos.xyz * lights[i].wLightPos.w;
+			}
+		    wView  = wEye * wPos.w - wPos.xyz;
+		    // wNormal = (Minv * vec4(vtxNorm, 0) ).xyz;
+		    wNormal = (vec4(vtxNorm, 0) * Minv).xyz; // Saját, nem biztos hogy jó
+		    texcoord = vtxUV;
+		}
+	)";
+
+	// fragment shader in GLSL
+	const char * fragmentSource = R"(
+		#version 330 core
+		precision highp float;
+
+		struct Light {
+			vec3 La, Le;
+			vec4 wLightPos;
+		};
+
+		struct Material {
+			vec3 kd, ks, ka;
+			float shininess;
+		};
+
+		uniform Material material;
+		uniform Light[8] lights;    // light sources
+		uniform int   nLights;
+		uniform sampler2D diffuseTexture;
+
+		in  vec3 wNormal;       // interpolated world sp normal
+		in  vec3 wView;         // interpolated world sp view
+		in  vec3 wLight[8];     // interpolated world sp illum dir
+		in  vec2 texcoord;
+
+        out vec4 fragmentColor; // output goes to frame buffer
+
+		void main() {
+			vec3 N = normalize(wNormal);
+			vec3 V = normalize(wView);
+			if (dot(N, V) < 0) N = -N;	// prepare for one-sided surfaces like Mobius or Klein
+//			vec3 texColor = texture(diffuseTexture, texcoord).rgb;
+//			vec3 ka = material.ka * texColor;
+//			vec3 kd = material.kd * texColor;
+			vec3 ka = material.ka;
+			vec3 kd = material.kd;
+
+			vec3 radiance = vec3(0, 0, 0);
+			for(int i = 0; i < nLights; i++) {
+				vec3 L = normalize(wLight[i]);
+				vec3 H = normalize(L + V);
+				float cost = max(dot(N,L), 0), cosd = max(dot(N,H), 0);
+				// kd and ka are modulated by the texture
+				radiance += ka * lights[i].La +
+                           (kd * cost + material.ks * pow(cosd, material.shininess)) * lights[i].Le;
+			}
+			fragmentColor = vec4(radiance, 1);
+		}
+	)";
+public:
+	PhongShader() {
+		create(vertexSource, fragmentSource);
+	}
+
+	void Bind(RenderState state) {
+		Use(); 		// make this program run
+		setUniform(state.MVP, "MVP");
+		setUniform(state.M, "M");
+		setUniform(state.Minv, "Minv");
+		setUniform(state.wEye, "wEye");
+		if (state.texture != nullptr) (*state.texture, std::string("diffuseTexture"));
+		setUniformMaterial(*state.material, "material");
+
+		setUniform((int)state.lights.size(), "nLights");
+		for (unsigned int i = 0; i < state.lights.size(); i++) {
+			setUniformLight(state.lights[i], std::string("lights[") + std::to_string(i) + std::string("]"));
 		}
 	}
-)";
+};
 
-// print vec
-void pvec(vec2 v){
-	printf("(%.2f %.2f)\n", v.x, v.y);
-}
-void pvec(vec3 v){
-	printf("(%.2f %.2f %.2f)\n", v.x, v.y, v.z);
-}
-void pvec(vec4 v){
-	printf("(%.2f %.2f %.2f %.2f)\n", v.x, v.y, v.z, v.w);
-}
+struct VertexData {
+	vec3 position, normal;
+	vec2 texcoord;
+};
 
-template<typename T> T lerp(T a, T b, float t){
-	return a*(1-t) + t * b;
-}
+//---------------------------
+class ParamSurface : public Geometry<VertexData> {
+//---------------------------
+	unsigned int nVtxPerStrip, nStrips;
+public:
+	ParamSurface() { nVtxPerStrip = nStrips = 0; }
 
+	virtual void eval(Dnum2& U, Dnum2& V, Dnum2& X, Dnum2& Y, Dnum2& Z) = 0;
 
+	VertexData GenVertexData(float u, float v) {
+		VertexData vtxData;
+		vtxData.texcoord = vec2(u, v);
+		Dnum2 X, Y, Z;
+		Dnum2 U(u, vec2(1, 0)), V(v, vec2(0, 1));
+		eval(U, V, X, Y, Z);
+		vtxData.position = vec3(X.f, Y.f, Z.f);
+		vec3 drdU(X.d.x, Y.d.x, Z.d.x), drdV(X.d.y, Y.d.y, Z.d.y);
+		vtxData.normal = cross(drdU, drdV);
 
-
-const int winWidth = 600, winHeight = 600;
-
-std::vector<int16_t> compressed_image = {2308, 13, 84, 5, 152, 17, 76, 17, 144, 29, 64, 25, 136, 45, 16, 5, 32, 29, 132, 65,
-4, 21, 8, 33, 128, 85, 12, 41, 120, 93, 4, 73, 20, 9, 52, 101, 4, 81, 4, 29, 12, 5,
-12, 1129, 14, 241, 18, 241, 18, 245, 14, 145, 6, 97, 18, 125, 6, 9, 10, 97, 18, 53,
-10, 61, 30, 93, 22, 45, 14, 61, 30, 93, 22, 45, 18, 5, 6, 49, 30, 93, 30, 37, 22,
-61, 18, 97, 30, 37, 22, 61, 14, 97, 22, 9, 6, 37, 22, 45, 6, 9, 6, 9, 10, 93, 26,
-33, 6, 5, 26, 41, 6, 5, 10, 5, 6, 101, 26, 33, 42, 49, 6, 101, 14, 5, 6, 41, 46, 21,
-6, 17, 6, 9, 6, 93, 14, 53, 50, 29, 14, 105, 6, 9, 10, 41, 54, 13, 34, 93, 14, 13,
-6, 41, 54, 9, 42, 85, 30, 49, 26, 21, 58, 81, 34, 45, 26, 21, 62, 5, 6, 65, 42, 69,
-6, 13, 62, 73, 50, 41, 10, 5, 14, 13, 66, 69, 42, 9, 6, 37, 106, 61, 58, 37, 106,
-61, 34, 5, 18, 37, 6, 13, 90, 13, 6, 25, 10, 17, 30, 9, 10, 57, 98, 33, 30, 5, 26,
-33, 4, 33, 102, 9, 18, 13, 50, 5, 6, 9, 10, 9, 6, 4, 17, 4, 17, 122, 5, 6, 5, 46, 5,
-8, 9, 10, 9, 6, 8, 37, 82, 5, 10, 5, 10, 5, 14, 9, 38, 5, 24, 6, 13, 6, 16, 29, 18,
-9, 34, 5, 58, 17, 10, 13, 6, 5, 36, 17, 12, 41, 6, 17, 6, 5, 74, 53, 32, 17, 20, 57,
-6, 5, 50, 5, 6, 5, 6, 57, 32, 21, 20, 61, 18, 5, 22, 5, 18, 5, 6, 61, 28, 17, 24,
-61, 4, 6, 5, 6, 21, 4, 21, 6, 65, 4, 9, 20, 9, 28, 29, 4, 45, 6, 121, 24, 5, 32, 29,
-4, 37, 6, 5, 6, 121, 20, 9, 28, 205, 20, 5, 28, 81, 4, 125, 16, 5, 24, 5, 4, 209,
-12, 5, 4, 5, 16, 217, 8, 17, 16, 913};
-
-std::vector<vec3> uncompressed_image;
-void uncompress(){
-	printf("Size of image: %lu\n", compressed_image.size());
-	for(int16_t elem : compressed_image){
-		bool print = false;
-		if(elem == 13) print = true;
-		int16_t mask = 0b0000000000000011;
-		int16_t lower = elem & mask;
-		int upper = (elem & (~mask)) >> 2;
-
-		vec3 color = vec3(-1, -1, -1);
-		switch (lower) {
-			case 0b00:
-				color = vec3(1, 1, 1);
-				break;
-			case 0b01:
-				color = vec3(0, 0, 1);
-				break;
-			case 0b10:
-				color = vec3(0, 1, 0);
-				break;
-			case 0b11:
-				color = vec3(0, 0, 0);
-				break;
-		}
-
-		if(color.x < 0){
-			printf("Invalid color code\n");
-			exit(1);
-		}
-
-		printf("Pushing %d db %.2f %.2f %.2f\n", upper, color.x, color.y, color.z);
-
-		for(int i = 0; i<upper; i++){
-			uncompressed_image.push_back(color);
-		}
-
-
-		// if(print){
-		// 	printf("%x\n", elem);
-		// 	printf("%x\n", lower);
-		// 	printf("%x\n", upper);
-		// }
-	}
-	printf("uncompressed size: %lu\n", uncompressed_image.size());
-}
-
-// input v = phi, theta
-// r = 1
-// beágyazó tér???
-vec3 sphere23d(vec2 v){
-	float x = sin(v.x)*cos(v.y);
-	float y = sin(v.x)*sin(v.y);
-	float z = cos(v.y);
-	return vec3(x, y, z);
-}
-
-// input v = phi, theta
-vec2 sphere2merc(vec2 v){
-	return vec2(v.x, log(tan(M_PI_4f + v.y /2)));
-}
-// output v = phi, theta
-vec2 merc2sphere(vec2 v){
-	float out;
-	out = v.y;
-	out = exp(out);
-	out = atan(out);
-	out = out - M_PI_4f;
-	out = out*2;
-	return vec2(v.x, out);
-}
-
-struct WorldMap {
-	unsigned int vao, vbo[2];	// vao és két vbo: geometria + uv
-	std::vector<vec2> vtx;	    // geometria a CPU-n
-	Texture texture;            // kép a tapétázáshoz
-	int picked = -1;		    // kiválasztott csúcspont sorszáma
-	WorldMap() : texture(64, 64){
-		texture.updateTexture(64, 64, uncompressed_image);
-
-		glGenVertexArrays(1, &vao);
-		glBindVertexArray(vao);
-		glGenBuffers(2, &vbo[0]);  // egyszerre két vbo-t kérünk
-		// a négyszög csúcsai kezdetben normalizált eszközkoordinátákban
-		vtx = { vec2(-1, -1), vec2(1, -1), vec2(1, 1), vec2(-1, 1) };
-		updateGPU();               // GPU-ra másoljuk
-		glEnableVertexAttribArray(0); // a 0. vbo a 0. bemeneti regisztert táplálja
-		glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, NULL); // csúcsonként 2 float-tal
-		// a négyszög csúcsai textúratérben
-		// std::vector<vec2> uvs = { vec2(0, 1), vec2(1, 1), vec2(1, 0), vec2(0, 0) };
-		std::vector<vec2> uvs = { vec2(0, 0), vec2(1, 0), vec2(1, 1), vec2(0, 1) };
-		glBindBuffer(GL_ARRAY_BUFFER, vbo[1]); // GPU-ra másoljuk
-		glBufferData(GL_ARRAY_BUFFER, uvs.size() * sizeof(vec2), &uvs[0], GL_STATIC_DRAW);
-		glEnableVertexAttribArray(1); // a 1. vbo a 1. bemeneti regisztert táplálja
-		glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 0, NULL); // csúcsonként 2 float-tal
-	}
-	void updateGPU() { // vtx tömb átmásolása a GPU-ra a vbo[0] VBO-ba
-		glBindVertexArray(vao);
-		glBindBuffer(GL_ARRAY_BUFFER, vbo[0]);
-		glBufferData(GL_ARRAY_BUFFER, vtx.size() * sizeof(vec2), &vtx[0], GL_DYNAMIC_DRAW);
-	}
-	void Draw(GPUProgram* gpuProgram) {
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-		int textureUnit = 0; // textúra mintavevő egység
-		gpuProgram->setUniform(textureUnit, "textureUnit"); // türkisz nyíl
-		texture.Bind(textureUnit);      		                    // piros nyíl
-		glBindVertexArray(vao);
-		glDrawArrays(GL_TRIANGLE_FAN, 0, 4);        // négyszög rajzolás
+		printf("Added pos: %f, %f, %f\n", vtxData.position.x, vtxData.position.y, vtxData.position.z);
+		return vtxData;
 	}
 
-	void valamiupdate()	{
-		for(int i = 0; i<uncompressed_image.size(); i++){
-			if((i+ i/64)%2 == 0){
-				if(uncompressed_image[i].x > 0) uncompressed_image[i].x = 0.5;
-				if(uncompressed_image[i].y > 0) uncompressed_image[i].y = 0.5;
-				if(uncompressed_image[i].z > 0) uncompressed_image[i].z = 0.5;
+	void create(int N = tessellationLevel, int M = tessellationLevel) {
+		nVtxPerStrip = (M + 1) * 2; // kifejezetten a for loopból kitalálva
+		nStrips = N;
+		std::vector<VertexData> vtxData;	// vertices on the CPU
+		for (int i = 0; i < N; i++) {
+			for (int j = 0; j <= M; j++) {
+				vtxData.push_back(GenVertexData((float)j / M, (float)i / N));
+				vtxData.push_back(GenVertexData((float)j / M, (float)(i + 1) / N));
 			}
 		}
-		texture.updateTexture(64, 64, uncompressed_image);
+		glBufferData(GL_ARRAY_BUFFER, nVtxPerStrip * nStrips * sizeof(VertexData), &vtxData[0], GL_STATIC_DRAW);
+		// Enable the vertex attribute arrays
+		glEnableVertexAttribArray(0);  // attribute array 0 = POSITION
+		glEnableVertexAttribArray(1);  // attribute array 1 = NORMAL
+		glEnableVertexAttribArray(2);  // attribute array 2 = TEXCOORD0
+		// attribute array, components/attribute, component type, normalize?, stride, offset
+		glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(VertexData), (void*)offsetof(VertexData, position));
+		glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(VertexData), (void*)offsetof(VertexData, normal));
+		glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(VertexData), (void*)offsetof(VertexData, texcoord));
+	}
+
+	void Draw() {
+		Bind();
+		for (unsigned int i = 0; i < nStrips; i++) glDrawArrays(GL_TRIANGLE_STRIP, i *  nVtxPerStrip, nVtxPerStrip);
 	}
 };
 
-struct Test{
-	// point stored as sphere coordinates
-	std::vector<vec2> points;
-	Geometry<vec2> drawPoints;
-
-	void addSpherePoint(vec2 p){
-		printf("added point ");
-		pvec(sphere2merc(p));
-		drawPoints.Vtx().push_back(sphere2merc(p));
-		drawPoints.updateGPU();
-	}
-
-	void Draw(GPUProgram* prog){
-		drawPoints.Draw(prog, GL_POINTS, vec3(1, 0, 0));
-	}
-};
-
-class TextureApp : public glApp {
-	Geometry<vec2> *line;
-	WorldMap* wm;
-	GPUProgram* gpuProgram;
-	bool mousePressed = false;
-
-	Test* test;
-	// TODO: Legyen ez alapján a viewport
-	int vpX = 0, vpY = 0, vpWidth = winWidth, vpHeight = winHeight;
-	vec3 PixelToNDC(int pX, int pY) {
-		pY = winHeight - pY;
-		return vec3(2.0f * (pX - vpX) / vpWidth - 1, 2.0f * (pY - vpY) / vpHeight - 1, 1);
-	}
+//---------------------------
+class Sphere : public ParamSurface {
+//---------------------------
 public:
-	TextureApp() : glApp(3, 3, winWidth, winHeight, "Texturing") { }
+	Sphere() { create(); }
+	void eval(Dnum2& U, Dnum2& V, Dnum2& X, Dnum2& Y, Dnum2& Z) {
+		// TODO Itt miért van egy vessző?
+		U = U * 2.0f * (float)M_PI; V = V * (float)M_PI;
+		X = Cos(U) * Sin(V); Y = Sin(U) * Sin(V); Z = Cos(V);
+	}
+};
+
+//---------------------------
+class Tractricoid : public ParamSurface {
+//---------------------------
+public:
+	Tractricoid() { create(); }
+	void eval(Dnum2& U, Dnum2& V, Dnum2& X, Dnum2& Y, Dnum2& Z) {
+		const float height = 3.0f;
+		U = U * height, V = V * 2 * M_PI;
+		X = Cos(V) / Cosh(U); Y = Sin(V) / Cosh(U); Z = U - Tanh(U);
+	}
+};
+
+//---------------------------
+class Cylinder : public ParamSurface {
+//---------------------------
+public:
+	Cylinder() { create(); }
+	void eval(Dnum2& U, Dnum2& V, Dnum2& X, Dnum2& Y, Dnum2& Z) {
+		U = U * 2.0f * M_PI, V = V * 2 - 1.0f;
+		X = Cos(U); Z = Sin(U); Y = V;
+	}
+};
+
+//---------------------------
+class Torus : public ParamSurface {
+//---------------------------
+public:
+	Torus() { create(); }
+	void eval(Dnum2& U, Dnum2& V, Dnum2& X, Dnum2& Y, Dnum2& Z) {
+		const float R = 1, r = 0.5f;
+		U = U * 2.0f * M_PI, V = V * 2.0f * M_PI;
+		Dnum2 D = Cos(U) * r + R;
+		X = D * Cos(V); Y = D * Sin(V); Z = Sin(U) * r;
+	}
+};
+
+//---------------------------
+class Mobius : public ParamSurface {
+//---------------------------
+public:
+	Mobius() { create(); }
+	void eval(Dnum2& U, Dnum2& V, Dnum2& X, Dnum2& Y, Dnum2& Z) {
+		const float R = 1, width = 0.5f;
+		U = U * M_PI, V = (V - 0.5f) * width;
+		X = (Cos(U) * V + R) * Cos(U * 2);
+		Y = (Cos(U) * V + R) * Sin(U * 2);
+		Z = Sin(U) * V;
+	}
+};
+
+//---------------------------
+class Klein : public ParamSurface {
+//---------------------------
+	const float size = 1.5f;
+public:
+	Klein() { create(); }
+	void eval(Dnum2& U, Dnum2& V, Dnum2& X, Dnum2& Y, Dnum2& Z) {
+		U = U * M_PI * 2, V = V * M_PI * 2;
+		Dnum2 a = Cos(U) * (Sin(U) + 1) * 0.3f;
+		Dnum2 b = Sin(U) * 0.8f;
+		Dnum2 c = (Cos(U) * (-0.1f) + 0.2f);
+		X = a + c * ((U.f > M_PI) ? Cos(V + M_PI) : Cos(U) * Cos(V));
+		Y = b + ((U.f > M_PI) ? 0 : c * Sin(U) * Cos(V));
+		Z = c * Sin(V);
+	}
+};
+
+//---------------------------
+class Boy : public ParamSurface {
+//---------------------------
+public:
+	Boy() { create(); }
+	void eval(Dnum2& U, Dnum2& V, Dnum2& X, Dnum2& Y, Dnum2& Z) {
+		U = (U - 0.5f) * M_PI, V = V * M_PI;
+		float r2 = sqrt(2.0f);
+		Dnum2 denom = (Sin(U * 3)*Sin(V * 2)*(-3 / r2) + 3) * 1.2f;
+		Dnum2 CosV2 = Cos(V) * Cos(V);
+		X = (Cos(U * 2) * CosV2 * r2 + Cos(U) * Sin(V * 2)) / denom;
+		Y = (Sin(U * 2) * CosV2 * r2 - Sin(U) * Sin(V * 2)) / denom;
+		Z = (CosV2 * 3) / denom;
+	}
+};
+
+//---------------------------
+class Dini : public ParamSurface {
+//---------------------------
+	Dnum2 a = 1.0f, b = 0.15f;
+public:
+	Dini() { create(); }
+
+	void eval(Dnum2& U, Dnum2& V, Dnum2& X, Dnum2& Y, Dnum2& Z) {
+		U = U * 4 * M_PI, V = V * (1 - 0.1f) + 0.1f;
+		X = a * Cos(U) * Sin(V);
+		Y = a * Sin(U) * Sin(V);
+		Z = a * (Cos(V) + Log(Tan(V / 2))) + b * U + 3;
+	}
+};
+
+//---------------------------
+class Paraboloid : public ParamSurface {
+//---------------------------
+	Dnum2 a = 1.0f, b = 0.15f;
+public:
+	Paraboloid() { create(); }
+
+	void eval(Dnum2& U, Dnum2& V, Dnum2& X, Dnum2& Y, Dnum2& Z) {
+		U = U * 2 * M_PI;
+		V = V * 2;
+		X = V * Cos(U);
+		Z = V * Sin(U);
+		Y = X * X + Z * Z;
+	}
+};
+
+//---------------------------
+class Hyperboloid : public ParamSurface {
+//---------------------------
+public:
+	Hyperboloid() { create(); }
+
+	void eval(Dnum2& U, Dnum2& V, Dnum2& X, Dnum2& Y, Dnum2& Z) {
+		V = V * 2 * M_PI;
+		U = U * 2 - 1;
+		X = Cosh(U) * Cos(V);
+		Z = Cosh(U) * Sin(V);
+		Y = Sinh(U);
+	}
+};
+
+//---------------------------
+struct Object {
+//---------------------------
+	Shader *   shader;
+	Material * material;
+	Texture *  texture;
+	ParamSurface* geometry;
+	vec3 scaling, translation, rotationAxis;
+	float rotationAngle;
+public:
+	Object(Shader * _shader, Material * _material, Texture * _texture, ParamSurface* _geometry) :
+		scaling(vec3(1, 1, 1)), translation(vec3(0, 0, 0)), rotationAxis(0, 0, 1), rotationAngle(0) {
+		shader = _shader;
+		texture = _texture;
+		material = _material;
+		geometry = _geometry;
+	}
+
+	virtual void SetModelingTransform(mat4& M, mat4& Minv) {
+		M = translate(translation) * rotate(rotationAngle, rotationAxis) * scale(scaling);
+		Minv = scale(vec3(1 / scaling.x, 1 / scaling.y, 1 / scaling.z)) * rotate(-rotationAngle, rotationAxis) * translate(-translation);
+	}
+
+	void Draw(RenderState state) {
+		mat4 M, Minv;
+		SetModelingTransform(M, Minv);
+		state.M = M;
+		state.Minv = Minv;
+		// Biztos OK?
+		// state.MVP = state.M * state.V * state.P;
+		state.MVP = state.P*state.V*state.M;
+		state.material = material;
+		state.texture = texture;
+		shader->Bind(state);
+		geometry->Draw();
+	}
+
+	virtual void Animate(float tstart, float tend) { rotationAngle = 0.8f * tend; }
+};
+
+//---------------------------
+class Scene {
+//---------------------------
+	std::vector<Object *> objects;
+	Camera camera; // 3D camera
+	std::vector<Light> lights;
+public:
+	void Build() {
+		// Shaders
+		printf("Elotte\n");
+		Shader * phongShader = new PhongShader();
+		printf("Utana\n");
+
+		// Materials
+		Material * material0 = new Material;
+		material0->kd = vec3(1, 1, 0);
+		material0->ks = vec3(0, 0, 0);
+		material0->ka = vec3(0.5f, 0.5f, 0);
+		material0->shininess = 100;
+
+		Material * material1 = new Material;
+		material1->kd = vec3(0.8f, 0.6f, 0.4f);
+		material1->ks = vec3(0.3f, 0.3f, 0.3f);
+		material1->ka = vec3(0.2f, 0.2f, 0.2f);
+		material1->shininess = 30;
+
+		// Textures
+		Texture * texture4x8 = new Texture(4, 8);
+		Texture * texture15x20 = new Texture(15, 20);
+
+		// Geometries
+		ParamSurface* sphere = new Sphere();
+		ParamSurface* hyper = new Hyperboloid();
+		ParamSurface* boy = new Boy();
+
+		// Create objects by setting up their vertex data on the GPU
+		Object * sphereObject1 = new Object(phongShader, material0, nullptr, hyper);
+		sphereObject1->translation = vec3(0, 0, 0);
+		// sphereObject1->scaling = vec3(1, 1, 1);
+		objects.push_back(sphereObject1);
+
+		Object * sphereObject2 = new Object(phongShader, material0, nullptr, sphere);
+		sphereObject2->translation = vec3(0, 1, 0);
+		sphereObject2->scaling = vec3(0.5, 0.5, 0.5);
+		objects.push_back(sphereObject2);
+
+		// Camera
+		camera.wEye = vec3(3, 3, 10);
+		camera.wLookat = vec3(0, 0, 0);
+		camera.wVup = vec3(0, 1, 0);
+
+		// Lights
+		lights.resize(1);
+		lights[0].wLightPos = vec4(5, 5, 4, 0);	// ideal point -> directional light source
+		lights[0].La = vec3(0, 0, 0);
+		lights[0].Le = vec3(1, 1, 1);
+	}
+
+	void Render() {
+		RenderState state;
+		state.wEye = camera.wEye;
+		state.V = camera.V();
+		state.P = camera.P();
+		state.lights = lights;
+		for (Object * obj : objects) obj->Draw(state);
+	}
+
+	void Animate(float tstart, float tend) {
+		float dt = tend-tstart;
+
+		float r = 3.0;
+		// camera.wEye.x = r*sin(tend);
+		// camera.wEye.z = r*cos(tend);
+		// camera.wEye.y = r*cos(tend);
+
+
+		// camera.wLookat.y = 3*sin(tend*2);
+
+		// camera.wLookat.x = (int)(tend*100) % 10000 / 100;
+		printf("Forgok!\n");
+		for (Object * obj : objects) obj->Animate(tstart, tend);
+	}
+};
+
+class EngineApp : public glApp {
+	Scene scene;
+public:
+	EngineApp() : glApp(3, 3, windowWidth, windowHeight, "3D Engine-ke") { }
+
 	void onInitialization() {
-		gpuProgram = new GPUProgram(vertSourceText, fragSourceText);
-		glClearColor(0, 0, 0, 0);     // háttér fekete
-
-
-		// MEGNÉZNI A JÓT
-		glLineWidth(3);
-		glPointSize(5);
-
-		uncompress();
-
-		wm = new WorldMap();
-		line = new Geometry<vec2>;
-		test = new Test();
-
-		auto a = vec2(0.25, -M_PI_4f);
-		auto b = vec2(0.25, M_PI_4f);
-
-		for(int i = 0; i < 100; i++){
-			printf("i: %d\t", i);
-			auto v = lerp(a, b, (float)i/100);
-			pvec(v);
-			test->addSpherePoint(v);
-		}
-
-
-
-		line->Vtx().push_back(vec2(0, 0));
-		line->Vtx().push_back(vec2(1, 0));
-		line->updateGPU();
-		printf("\n");
+		glViewport(0, 0, windowWidth*OP_SYS_SCALE, windowHeight*OP_SYS_SCALE);
+		glEnable(GL_DEPTH_TEST);
+		glDisable(GL_CULL_FACE);
+		scene.Build();
 	}
 	void onDisplay() {
-		glClear(GL_COLOR_BUFFER_BIT); // törlés
-		glViewport(0, 0, winWidth, winHeight);
-		gpuProgram->setUniform(true, "texturing");
-		wm->Draw(gpuProgram);
-		gpuProgram->setUniform(false, "texturing");
-		line->Draw(gpuProgram, GL_LINES, vec3(1, 0, 0));
-		test->Draw(gpuProgram);
+		glClearColor(0.3f, 0.3f, 1.0f, 1.0f);				// background color
+		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT); // clear the screen
+		scene.Render();
 	}
-	void onMousePressed(MouseButton button, int pX, int pY) {
-		printf("asd\n");
-		wm->valamiupdate();
-	}
-	void onMouseReleased(MouseButton button, int pX, int pY) {
-	}
-	void onMouseMotion(int pX, int pY) {
+	void onTimeElapsed(float tstart, float tend) {
+		scene.Animate(tstart, tend);
 		refreshScreen();
 	}
-};
-
-TextureApp app;
+} app;
