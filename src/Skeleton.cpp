@@ -186,14 +186,21 @@ class PhongShader : public Shader {
 			vec3 kd = material.kd;
 
 			vec3 radiance = vec3(0, 0, 0);
-			for(int i = 0; i < nLights; i++) {
-				vec3 L = normalize(wLight[i]);
-				vec3 H = normalize(L + V);
-				float cost = max(dot(N,L), 0), cosd = max(dot(N,H), 0);
-				// kd and ka are modulated by the texture
-				radiance += ka * lights[i].La +
-                           (kd * cost + material.ks * pow(cosd, material.shininess)) * lights[i].Le;
-			}
+			// for(int i = 0; i < nLights; i++) {
+			// 	vec3 L = normalize(wLight[i]);
+			// 	vec3 H = normalize(L + V);
+			// 	float cost = max(dot(N,L), 0), cosd = max(dot(N,H), 0);
+			// 	// kd and ka are modulated by the texture
+			// 	radiance += ka * lights[i].La +
+   //                         (kd * cost + material.ks * pow(cosd, material.shininess)) * lights[i].Le;
+			// }
+			// Csak egy fényforrás van, egyelőre hardcodeolom a shaderbe
+			// Iránya 1, 1, 1
+			vec3 L = normalize(vec3(1, 1, 1));
+			vec3 H = normalize(L + V);
+			float cost = max(dot(N,L), 0), cosd = max(dot(N,H), 0);
+			// Ambiens 0.4, 0.4, 0.4, rendes sugársűrűség 2, 2, 2
+			radiance += ka * vec3(0.4, 0.4, 0.4) + (kd * cost + material.ks * pow(cosd, material.shininess)) * vec3(2, 2, 2);
 			fragmentColor = vec4(radiance, 1);
 		}
 	)";
@@ -211,10 +218,11 @@ public:
 		if (state.texture != nullptr) (*state.texture, std::string("diffuseTexture"));
 		setUniformMaterial(*state.material, "material");
 
-		setUniform((int)state.lights.size(), "nLights");
-		for (unsigned int i = 0; i < state.lights.size(); i++) {
-			setUniformLight(state.lights[i], std::string("lights[") + std::to_string(i) + std::string("]"));
-		}
+		// Fények beégetve
+		// setUniform((int)state.lights.size(), "nLights");
+		// for (unsigned int i = 0; i < state.lights.size(); i++) {
+		// 	setUniformLight(state.lights[i], std::string("lights[") + std::to_string(i) + std::string("]"));
+		// }
 	}
 };
 
@@ -256,6 +264,8 @@ public:
 				vtxData.push_back(GenVertexData((float)j / M, (float)(i + 1) / N));
 			}
 		}
+		printf("#of points in a generated geometry: %d\n", nVtxPerStrip * nStrips);
+
 		glBufferData(GL_ARRAY_BUFFER, nVtxPerStrip * nStrips * sizeof(VertexData), &vtxData[0], GL_STATIC_DRAW);
 		// Enable the vertex attribute arrays
 		glEnableVertexAttribArray(0);  // attribute array 0 = POSITION
@@ -286,131 +296,27 @@ public:
 };
 
 //---------------------------
-class Tractricoid : public ParamSurface {
-//---------------------------
-public:
-	Tractricoid() { create(); }
-	void eval(Dnum2& U, Dnum2& V, Dnum2& X, Dnum2& Y, Dnum2& Z) {
-		const float height = 3.0f;
-		U = U * height, V = V * 2 * M_PI;
-		X = Cos(V) / Cosh(U); Y = Sin(V) / Cosh(U); Z = U - Tanh(U);
-	}
-};
-
-//---------------------------
 class Cylinder : public ParamSurface {
 //---------------------------
+
 public:
-	Cylinder() { create(); }
+	Cylinder() { create(1, 6); }
 	void eval(Dnum2& U, Dnum2& V, Dnum2& X, Dnum2& Y, Dnum2& Z) {
 		U = U * 2.0f * M_PI, V = V * 2 - 1.0f;
 		X = Cos(U); Z = Sin(U); Y = V;
 	}
 };
 
-//---------------------------
-class Torus : public ParamSurface {
-//---------------------------
+// 45 fokos, majd scale megoldja?
+class Cone : public ParamSurface{
+
 public:
-	Torus() { create(); }
+	Cone() { create(1, 6); }
 	void eval(Dnum2& U, Dnum2& V, Dnum2& X, Dnum2& Y, Dnum2& Z) {
-		const float R = 1, r = 0.5f;
-		U = U * 2.0f * M_PI, V = V * 2.0f * M_PI;
-		Dnum2 D = Cos(U) * r + R;
-		X = D * Cos(V); Y = D * Sin(V); Z = Sin(U) * r;
-	}
-};
-
-//---------------------------
-class Mobius : public ParamSurface {
-//---------------------------
-public:
-	Mobius() { create(); }
-	void eval(Dnum2& U, Dnum2& V, Dnum2& X, Dnum2& Y, Dnum2& Z) {
-		const float R = 1, width = 0.5f;
-		U = U * M_PI, V = (V - 0.5f) * width;
-		X = (Cos(U) * V + R) * Cos(U * 2);
-		Y = (Cos(U) * V + R) * Sin(U * 2);
-		Z = Sin(U) * V;
-	}
-};
-
-//---------------------------
-class Klein : public ParamSurface {
-//---------------------------
-	const float size = 1.5f;
-public:
-	Klein() { create(); }
-	void eval(Dnum2& U, Dnum2& V, Dnum2& X, Dnum2& Y, Dnum2& Z) {
-		U = U * M_PI * 2, V = V * M_PI * 2;
-		Dnum2 a = Cos(U) * (Sin(U) + 1) * 0.3f;
-		Dnum2 b = Sin(U) * 0.8f;
-		Dnum2 c = (Cos(U) * (-0.1f) + 0.2f);
-		X = a + c * ((U.f > M_PI) ? Cos(V + M_PI) : Cos(U) * Cos(V));
-		Y = b + ((U.f > M_PI) ? 0 : c * Sin(U) * Cos(V));
-		Z = c * Sin(V);
-	}
-};
-
-//---------------------------
-class Boy : public ParamSurface {
-//---------------------------
-public:
-	Boy() { create(); }
-	void eval(Dnum2& U, Dnum2& V, Dnum2& X, Dnum2& Y, Dnum2& Z) {
-		U = (U - 0.5f) * M_PI, V = V * M_PI;
-		float r2 = sqrt(2.0f);
-		Dnum2 denom = (Sin(U * 3)*Sin(V * 2)*(-3 / r2) + 3) * 1.2f;
-		Dnum2 CosV2 = Cos(V) * Cos(V);
-		X = (Cos(U * 2) * CosV2 * r2 + Cos(U) * Sin(V * 2)) / denom;
-		Y = (Sin(U * 2) * CosV2 * r2 - Sin(U) * Sin(V * 2)) / denom;
-		Z = (CosV2 * 3) / denom;
-	}
-};
-
-//---------------------------
-class Dini : public ParamSurface {
-//---------------------------
-	Dnum2 a = 1.0f, b = 0.15f;
-public:
-	Dini() { create(); }
-
-	void eval(Dnum2& U, Dnum2& V, Dnum2& X, Dnum2& Y, Dnum2& Z) {
-		U = U * 4 * M_PI, V = V * (1 - 0.1f) + 0.1f;
-		X = a * Cos(U) * Sin(V);
-		Y = a * Sin(U) * Sin(V);
-		Z = a * (Cos(V) + Log(Tan(V / 2))) + b * U + 3;
-	}
-};
-
-//---------------------------
-class Paraboloid : public ParamSurface {
-//---------------------------
-	Dnum2 a = 1.0f, b = 0.15f;
-public:
-	Paraboloid() { create(); }
-
-	void eval(Dnum2& U, Dnum2& V, Dnum2& X, Dnum2& Y, Dnum2& Z) {
-		U = U * 2 * M_PI;
-		V = V * 2;
-		X = V * Cos(U);
-		Z = V * Sin(U);
-		Y = X * X + Z * Z;
-	}
-};
-
-//---------------------------
-class Hyperboloid : public ParamSurface {
-//---------------------------
-public:
-	Hyperboloid() { create(); }
-
-	void eval(Dnum2& U, Dnum2& V, Dnum2& X, Dnum2& Y, Dnum2& Z) {
-		V = V * 2 * M_PI;
-		U = U * 2 - 1;
-		X = Cosh(U) * Cos(V);
-		Z = Cosh(U) * Sin(V);
-		Y = Sinh(U);
+		// U = U * 2.0f * M_PI, V = V * 2 - 1.0f;
+		U = U * 2.0f * M_PI, V = V;
+		// printf("V: %f\n", V.f);
+		X = Cos(U) * V; Z = Sin(U) * V; Y = V;
 	}
 };
 
@@ -482,34 +388,38 @@ public:
 
 		// Textures
 		Texture * texture4x8 = new Texture(4, 8);
-		Texture * texture15x20 = new Texture(15, 20);
 
 		// Geometries
 		ParamSurface* sphere = new Sphere();
-		ParamSurface* hyper = new Hyperboloid();
-		ParamSurface* boy = new Boy();
+		ParamSurface* cylinder = new Cylinder();
+		ParamSurface* cone = new Cone();
 
-		// Create objects by setting up their vertex data on the GPU
-		Object * sphereObject1 = new Object(phongShader, material0, nullptr, hyper);
-		sphereObject1->translation = vec3(0, 0, 0);
-		// sphereObject1->scaling = vec3(1, 1, 1);
-		objects.push_back(sphereObject1);
+		Object * testSphere = new Object(phongShader, material0, nullptr, sphere);
+		testSphere->translation = vec3(0, 1, 0);
+		testSphere->scaling = vec3(0.5, 0.5, 0.5);
+		// objects.push_back(testSphere);
 
-		Object * sphereObject2 = new Object(phongShader, material0, nullptr, sphere);
-		sphereObject2->translation = vec3(0, 1, 0);
-		sphereObject2->scaling = vec3(0.5, 0.5, 0.5);
-		objects.push_back(sphereObject2);
+		Object * testCylinder = new Object(phongShader, material0, nullptr, cylinder);
+		testCylinder->translation = vec3(0, 1, 0);
+		testCylinder->scaling = vec3(0.5, 0.5, 0.5);
+		// objects.push_back(testCylinder);
+
+		Object * testCone = new Object(phongShader, material0, nullptr, cone);
+		testCone->translation = vec3(0, 1, 0);
+		testCone->scaling = vec3(1, 2, 1);
+		objects.push_back(testCone);
 
 		// Camera
-		camera.wEye = vec3(3, 3, 10);
+		camera.wEye = vec3(0, 1, 4);
 		camera.wLookat = vec3(0, 0, 0);
 		camera.wVup = vec3(0, 1, 0);
 
+		// Fények beégetve
 		// Lights
-		lights.resize(1);
-		lights[0].wLightPos = vec4(5, 5, 4, 0);	// ideal point -> directional light source
-		lights[0].La = vec3(0, 0, 0);
-		lights[0].Le = vec3(1, 1, 1);
+		// lights.resize(1);
+		// lights[0].wLightPos = vec4(5, 5, 4, 0);	// ideal point -> directional light source
+		// lights[0].La = vec3(0, 0, 0);
+		// lights[0].Le = vec3(1, 1, 1);
 	}
 
 	void Render() {
@@ -524,16 +434,9 @@ public:
 	void Animate(float tstart, float tend) {
 		float dt = tend-tstart;
 
+		// TODO automatikus forgás a teszteléshez
 		float r = 3.0;
-		// camera.wEye.x = r*sin(tend);
-		// camera.wEye.z = r*cos(tend);
-		// camera.wEye.y = r*cos(tend);
 
-
-		// camera.wLookat.y = 3*sin(tend*2);
-
-		// camera.wLookat.x = (int)(tend*100) % 10000 / 100;
-		printf("Forgok!\n");
 		for (Object * obj : objects) obj->Animate(tstart, tend);
 	}
 };
@@ -544,6 +447,7 @@ public:
 	EngineApp() : glApp(3, 3, windowWidth, windowHeight, "3D Engine-ke") { }
 
 	void onInitialization() {
+		// TODO NEM KELL OP SYS SCALE
 		glViewport(0, 0, windowWidth*OP_SYS_SCALE, windowHeight*OP_SYS_SCALE);
 		glEnable(GL_DEPTH_TEST);
 		glDisable(GL_CULL_FACE);
@@ -553,6 +457,9 @@ public:
 		glClearColor(0.3f, 0.3f, 1.0f, 1.0f);				// background color
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT); // clear the screen
 		scene.Render();
+	}
+	void onKeyPressed(){
+
 	}
 	void onTimeElapsed(float tstart, float tend) {
 		scene.Animate(tstart, tend);
