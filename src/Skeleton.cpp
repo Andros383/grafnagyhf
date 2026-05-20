@@ -8,6 +8,8 @@
 // Light: point or directional sources
 //=============================================================================================
 #include <cmath>
+#include <system_error>
+#include <tuple>
 const float OP_SYS_SCALE = 2.0;
 
 #include "framework.h"
@@ -16,6 +18,7 @@ const float OP_SYS_SCALE = 2.0;
 template<class T> struct Dnum { // Dual numbers for automatic derivation
 //---------------------------
 	float f; // function value
+
 	T d;  // derivatives
 	Dnum(float f0 = 0, T d0 = T(0)) { f = f0, d = d0; }
 	Dnum operator+(Dnum r) { return Dnum(f + r.f, d + r.d); }
@@ -311,12 +314,12 @@ public:
 class Cone : public ParamSurface{
 
 public:
-	Cone() { create(1, 6); }
+	Cone() { create(10, 60); }
 	void eval(Dnum2& U, Dnum2& V, Dnum2& X, Dnum2& Y, Dnum2& Z) {
 		// U = U * 2.0f * M_PI, V = V * 2 - 1.0f;
 		U = U * 2.0f * M_PI, V = V;
 		// printf("V: %f\n", V.f);
-		X = Cos(U) * V; Z = Sin(U) * V; Y = V;
+		X = Cos(U) * (V + -1); Z = Sin(U) * (V + -1); Y = V;
 	}
 };
 
@@ -361,7 +364,7 @@ public:
 };
 
 //---------------------------
-class Scene {
+struct Scene {
 //---------------------------
 	std::vector<Object *> objects;
 	Camera camera; // 3D camera
@@ -405,12 +408,15 @@ public:
 		// objects.push_back(testCylinder);
 
 		Object * testCone = new Object(phongShader, material0, nullptr, cone);
-		testCone->translation = vec3(0, 1, 0);
+		testCone->translation = vec3(0, 0, 0);
 		testCone->scaling = vec3(1, 2, 1);
 		objects.push_back(testCone);
 
 		// Camera
-		camera.wEye = vec3(0, 1, 4);
+		// EZ AZ OK
+		// camera.wEye = vec3(0, 1, 4);
+		printf("Rossz kamera");
+		camera.wEye = vec3(0, 3, 4);
 		camera.wLookat = vec3(0, 0, 0);
 		camera.wVup = vec3(0, 1, 0);
 
@@ -458,11 +464,33 @@ public:
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT); // clear the screen
 		scene.Render();
 	}
-	void onKeyPressed(){
+	void onKeyboard(int key){
+		if(key != 'a' && key != 'd') return;
 
+		// LINUX DEBOUNCE
+		static bool debounce = true;
+		if(debounce){
+			debounce = false;
+			return;
+		}
+		debounce = true;
+
+		printf("Pressed %c\n", key);
+
+		float x = scene.camera.wEye.x;
+		float z = scene.camera.wEye.z;
+		float theta = atan2(z, x);
+		if(key == 'a'){
+			theta -= M_PI / 4;
+		}
+		if(key == 'd'){
+			theta += M_PI / 4;
+		}
+		scene.camera.wEye.x = cos(theta) * 4.0;
+		scene.camera.wEye.z = sin(theta) * 4.0;
 	}
 	void onTimeElapsed(float tstart, float tend) {
-		scene.Animate(tstart, tend);
+		// scene.Animate(tstart, tend);
 		refreshScreen();
 	}
 } app;
