@@ -10,9 +10,14 @@
 #include <cmath>
 #include <system_error>
 #include <tuple>
+#include <vector>
 const float OP_SYS_SCALE = 2.0;
 
+
 #include "framework.h"
+// TODO mindenhol ezt az ambienst használni:
+// textúrák, meg az alap, ahol van, talán shaderben
+const vec3 AMBIENT = vec3(0.4, 0.4, 0.4);
 
 //---------------------------
 template<class T> struct Dnum { // Dual numbers for automatic derivation
@@ -170,6 +175,11 @@ class PhongShader : public Shader {
 		uniform Light[8] lights;    // light sources
 		uniform int   nLights;
 		uniform sampler2D diffuseTexture;
+		uniform bool textured;
+
+
+		uniform vec3 allTriangles[20];
+
 
 		in  vec3 wNormal;       // interpolated world sp normal
 		in  vec3 wView;         // interpolated world sp view
@@ -182,11 +192,17 @@ class PhongShader : public Shader {
 			vec3 N = normalize(wNormal);
 			vec3 V = normalize(wView);
 			if (dot(N, V) < 0) N = -N;	// prepare for one-sided surfaces like Mobius or Klein
-//			vec3 texColor = texture(diffuseTexture, texcoord).rgb;
-//			vec3 ka = material.ka * texColor;
-//			vec3 kd = material.kd * texColor;
-			vec3 ka = material.ka;
-			vec3 kd = material.kd;
+			// Alapból ez, hogy amikor szorozzuk, csak átjöjjön a ka, kd
+			vec3 texColor = vec3(1, 1, 1);
+			if(textured){
+				texColor = texture(diffuseTexture, texcoord).rgb;
+			}
+			vec3 ka = material.ka * texColor;
+			vec3 kd = material.kd * texColor;
+
+			// textúrázunk trükkösen
+			// vec3 ka = material.ka;
+			// vec3 kd = material.kd;
 
 			vec3 radiance = vec3(0, 0, 0);
 			// for(int i = 0; i < nLights; i++) {
@@ -218,7 +234,11 @@ public:
 		setUniform(state.M, "M");
 		setUniform(state.Minv, "Minv");
 		setUniform(state.wEye, "wEye");
-		if (state.texture != nullptr) (*state.texture, std::string("diffuseTexture"));
+		if (state.texture != nullptr){
+			// ne legyen fura blend
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+			(*state.texture, std::string("diffuseTexture"));
+		}
 		setUniformMaterial(*state.material, "material");
 
 		// Fények beégetve
@@ -228,6 +248,9 @@ public:
 		// }
 	}
 };
+
+
+std::vector<vec3> allTriangles;
 
 struct VertexData {
 	vec3 position, normal;
@@ -290,7 +313,7 @@ public:
 class Sphere : public ParamSurface {
 //---------------------------
 public:
-	Sphere() { create(); }
+	Sphere() { create(100, 100); }
 	void eval(Dnum2& U, Dnum2& V, Dnum2& X, Dnum2& Y, Dnum2& Z) {
 		// TODO Itt miért van egy vessző?
 		U = U * 2.0f * (float)M_PI; V = V * (float)M_PI;
@@ -314,17 +337,30 @@ public:
 class Cone : public ParamSurface{
 
 public:
-	Cone() { create(10, 60); }
+	// Cone() { create(10, 60); }
+	Cone() { create(1, 6); }
 	void eval(Dnum2& U, Dnum2& V, Dnum2& X, Dnum2& Y, Dnum2& Z) {
-		// U = U * 2.0f * M_PI, V = V * 2 - 1.0f;
+		// TODO kivinni mert konstans
+		float angle = 0.2;
+		float height = 2.0;
+		float bottom_radius = tanf(angle) * height;
 		U = U * 2.0f * M_PI, V = V;
-		// printf("V: %f\n", V.f);
-		X = Cos(U) * (V + -1); Z = Sin(U) * (V + -1); Y = V;
+		X = Cos(U) * (V + -1) * bottom_radius; Z = Sin(U) * (V + -1) * bottom_radius; Y = V - 1;
+	}
+};
+
+class Square : public ParamSurface{
+	// TODO lehet manuálisan?
+public:
+	Square() { create(1, 1); }
+	void eval(Dnum2& U, Dnum2& V, Dnum2& X, Dnum2& Y, Dnum2& Z) {
+		U = U, V = V;
+		X = U - 0.5; Z = V - 0.5; Y = 0;
 	}
 };
 
 //---------------------------
-struct Object {
+struct Object3D {
 //---------------------------
 	Shader *   shader;
 	Material * material;
@@ -333,7 +369,7 @@ struct Object {
 	vec3 scaling, translation, rotationAxis;
 	float rotationAngle;
 public:
-	Object(Shader * _shader, Material * _material, Texture * _texture, ParamSurface* _geometry) :
+	Object3D(Shader * _shader, Material * _material, Texture * _texture, ParamSurface* _geometry) :
 		scaling(vec3(1, 1, 1)), translation(vec3(0, 0, 0)), rotationAxis(0, 0, 1), rotationAngle(0) {
 		shader = _shader;
 		texture = _texture;
@@ -351,11 +387,14 @@ public:
 		SetModelingTransform(M, Minv);
 		state.M = M;
 		state.Minv = Minv;
-		// Biztos OK?
-		// state.MVP = state.M * state.V * state.P;
 		state.MVP = state.P*state.V*state.M;
 		state.material = material;
 		state.texture = texture;
+		if(texture != nullptr){
+			shader->setUniform(true, "textured");
+		}else {
+			shader->setUniform(false, "textured");
+		}
 		shader->Bind(state);
 		geometry->Draw();
 	}
@@ -363,13 +402,54 @@ public:
 	virtual void Animate(float tstart, float tend) { rotationAngle = 0.8f * tend; }
 };
 
+struct ConeObj : Object3D{
+	vec3 axis, tip;
+	float angle = 0.2, height = 2;
+	ConeObj(vec3 _tip, vec3 _axis, Shader * _shader, Material * _material, Texture * _texture, ParamSurface* _geometry) :
+	Object3D(_shader, _material, _texture, _geometry){
+		tip = _tip;
+		axis = _axis;
+	}
+	void SetModelingTransform(mat4 &M, mat4 &Minv) override{
+		// modell beállítása
+		float sideScale = tanf(angle)*height;
+		// M = scale(vec3(sideScale, 2, sideScale));
+
+		rotationAngle = acosf(dot(normalize(axis), normalize(vec3(0, 1, 0))));
+		// TODO ha nem megy, még egy normalize
+		rotationAxis = normalize(cross(axis, vec3(0, 1, 0)));
+		// scale nem is lesz
+		// translation.x = tip.x * 1/sideScale;
+		// translation.y = tip.y * 1/height;
+		// translation.z = tip.z * 1/sideScale;
+		M = translate(tip) * rotate(rotationAngle, rotationAxis) * scale(scaling);
+		// TODO ez is kell!
+		Minv = scale(vec3(1 / scaling.x, 1 / scaling.y, 1 / scaling.z)) * rotate(-rotationAngle, rotationAxis) * translate(-translation);
+	}
+};
+
 //---------------------------
 struct Scene {
 //---------------------------
-	std::vector<Object *> objects;
+	std::vector<Object3D *> objects;
 	Camera camera; // 3D camera
 	std::vector<Light> lights;
+	std::vector<vec3> texture;
 public:
+	void generateTexture(){
+		vec3 blue = vec3(0, 0.1, 0.3);
+		vec3 white = vec3(0.3, 0.3, 0.3);
+		for(int i = 0; i < 20; i++){
+			for(int j = 0; j < 20; j++){
+				// TODO paritás ellenőrzés, jó-e?
+				vec3 active = white;
+				if((i + j) % 2 == 0){
+					active = blue;
+				}
+				texture.push_back(active);
+			}
+		}
+	}
 	void Build() {
 		// Shaders
 		printf("Elotte\n");
@@ -383,40 +463,78 @@ public:
 		material0->ka = vec3(0.5f, 0.5f, 0);
 		material0->shininess = 100;
 
-		Material * material1 = new Material;
-		material1->kd = vec3(0.8f, 0.6f, 0.4f);
-		material1->ks = vec3(0.3f, 0.3f, 0.3f);
-		material1->ka = vec3(0.2f, 0.2f, 0.2f);
-		material1->shininess = 30;
+		Material * texture_material = new Material;
+		texture_material->kd = vec3(1, 1, 1);
+		texture_material->ks = vec3(0, 0, 0);
+		texture_material->ka = vec3(0, 0, 0);
+
 
 		// Textures
-		Texture * texture4x8 = new Texture(4, 8);
 
 		// Geometries
+
 		ParamSurface* sphere = new Sphere();
 		ParamSurface* cylinder = new Cylinder();
 		ParamSurface* cone = new Cone();
+		ParamSurface* square = new Square();
 
-		Object * testSphere = new Object(phongShader, material0, nullptr, sphere);
-		testSphere->translation = vec3(0, 1, 0);
-		testSphere->scaling = vec3(0.5, 0.5, 0.5);
-		// objects.push_back(testSphere);
+		Material * yellowPointer = new Material;
+		yellowPointer->kd = vec3(1, 1, 0);
+		yellowPointer->ks = vec3(0, 0, 0);
+		yellowPointer->ka = vec3(0.5f, 0.5f, 0);
+		yellowPointer->shininess = 100;
 
-		Object * testCylinder = new Object(phongShader, material0, nullptr, cylinder);
-		testCylinder->translation = vec3(0, 1, 0);
-		testCylinder->scaling = vec3(0.5, 0.5, 0.5);
+		Object3D * pointerSphere = new Object3D(phongShader, material0, nullptr, sphere);
+		pointerSphere->translation = vec3(0, 1, 0.8);
+		pointerSphere->scaling = vec3(1, 1, 1) * 0.01;
+		objects.push_back(pointerSphere);
+
+		// Object * testCylinder = new Object(phongShader, material0, nullptr, cylinder);
+		// testCylinder->translation = vec3(0, 0, 0);
+		// testCylinder->scaling = vec3(1, 1, 1);
 		// objects.push_back(testCylinder);
 
-		Object * testCone = new Object(phongShader, material0, nullptr, cone);
-		testCone->translation = vec3(0, 0, 0);
-		testCone->scaling = vec3(1, 2, 1);
-		objects.push_back(testCone);
+		Material * cyanMaterial = new Material;
+		cyanMaterial->kd = vec3(0.1, 0.2, 0.3);
+		// TODO full fehér ha ezt berakom
+		// cyanMaterial->ks = vec3(2, 2, 2);
+		// "A rücskös anyagok ambiens visszaverődési tényezője a diffúz tényezőjének a háromszorosa."
+		// ez ezt jelenti? vagy csak az ambienst kéne beállítani?
+		// szerintem nem
+		cyanMaterial->ka = cyanMaterial->kd*3;
+		material0->shininess = 100;
+		ConeObj * cyanCone = new ConeObj(vec3(0, 1, 0), vec3(-0.1, -1, -0.05)*-1, phongShader, cyanMaterial, nullptr, cone);
+		cyanCone->translation = vec3(0, 0, 0);
+		objects.push_back(cyanCone);
+
+		Material * magentaMaterial = new Material;
+		magentaMaterial->kd = vec3(0.3, 0, 0.2);
+		// TODO full fehér ha ezt berakom
+		// magentaMaterial->ks = vec3(2, 2, 2);
+		// "A rücskös anyagok ambiens visszaverődési tényezője a diffúz tényezőjének a háromszorosa."
+		// ez ezt jelenti? vagy csak az ambienst kéne beállítani?
+		// szerintem nem
+		magentaMaterial->ka = magentaMaterial->kd*3;
+		material0->shininess = 20;
+		ConeObj * magentaCone = new ConeObj(vec3(0, 1, 0.8), vec3(0.2, -1, 0)*-1, phongShader, magentaMaterial, nullptr, cone);
+		magentaCone->translation = vec3(0, 0, 0);
+		objects.push_back(magentaCone);
+
+		Texture* kockas = new Texture(20, 20);
+		generateTexture();
+		kockas->updateTexture(20, 20, texture);
+		Object3D * floor = new Object3D(phongShader, texture_material, kockas, square);
+		floor->translation = vec3(0, -1, 0);
+		// TODO jól beállítani a méretet
+		floor->scaling = vec3(20, 1, 20);
+		objects.push_back(floor);
 
 		// Camera
 		// EZ AZ OK
 		// camera.wEye = vec3(0, 1, 4);
 		printf("Rossz kamera");
-		camera.wEye = vec3(0, 3, 4);
+		// nem lehet 0 wEye?
+		camera.wEye = vec3(1, 2, -1);
 		camera.wLookat = vec3(0, 0, 0);
 		camera.wVup = vec3(0, 1, 0);
 
@@ -434,7 +552,7 @@ public:
 		state.V = camera.V();
 		state.P = camera.P();
 		state.lights = lights;
-		for (Object * obj : objects) obj->Draw(state);
+		for (Object3D * obj : objects) obj->Draw(state);
 	}
 
 	void Animate(float tstart, float tend) {
@@ -443,7 +561,7 @@ public:
 		// TODO automatikus forgás a teszteléshez
 		float r = 3.0;
 
-		for (Object * obj : objects) obj->Animate(tstart, tend);
+		for (Object3D * obj : objects) obj->Animate(tstart, tend);
 	}
 };
 
@@ -460,7 +578,7 @@ public:
 		scene.Build();
 	}
 	void onDisplay() {
-		glClearColor(0.3f, 0.3f, 1.0f, 1.0f);				// background color
+		glClearColor(0.5, 0.5f, 0.5f, 1.0f);				// background color
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT); // clear the screen
 		scene.Render();
 	}
@@ -488,6 +606,10 @@ public:
 		}
 		scene.camera.wEye.x = cos(theta) * 4.0;
 		scene.camera.wEye.z = sin(theta) * 4.0;
+		scene.camera.wEye.y = 1;
+
+		vec3 campos = scene.camera.wEye;
+		printf("Camera pos: %.2f, %.2f, %.2f", campos.x, campos.y, campos.z);
 	}
 	void onTimeElapsed(float tstart, float tend) {
 		// scene.Animate(tstart, tend);
