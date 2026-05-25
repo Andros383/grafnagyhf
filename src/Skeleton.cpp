@@ -1,26 +1,40 @@
-// TESZT KÓD
-// Név: Falucskai András
-// Neptun: A2PT9J
-#include <cmath>
-#include <cstdio>
-#include <cstdlib>
-#include <system_error>
-#include <tuple>
-#include <vector>
-const float OP_SYS_SCALE = 1.0;
-
+//=============================================================================================
+// A beadott program csak ebben a fajlban lehet, a fajl 1 byte-os ASCII karaktereket tartalmazhat, BOM kihuzando.
+// Tilos:
+// - mast "beincludolni", illetve mas konyvtarat hasznalni
+// - faljmuveleteket vegezni a printf-et kiveve
+// - mashonnan atvett programresszleteket forrasmegjeloles nelkul felhasznalni, ide�rtve ChatGPT-t �s t�rsait is
+// - felesleges programsorokat a beadott programban hagyni
+// - felesleges kommenteket a beadott programba irni a forrasmegjelolest kommentjeit kiveve
+// ---------------------------------------------------------------------------------------------
+// A feladatot ANSI C++ nyelvu forditoprogrammal ellenorizzuk, a Visual Studio-hoz kepesti elteresekrol
+// es a leggyakoribb hibakrol (pl. ideiglenes objektumot nem lehet referencia tipusnak ertekul adni)
+// a hazibeado portal ad egy osszefoglalot.
+// ---------------------------------------------------------------------------------------------
+// A feladatmegoldasokban csak olyan OpenGL es GLM fuggvenyek hasznalhatok, amelyek az oran a feladatkiadasig elhangzottak
+//
+// NYILATKOZAT
+// ---------------------------------------------------------------------------------------------
+// Nev    : Falucskai Andras
+// Neptun : A2PT9J
+// ---------------------------------------------------------------------------------------------
+// ezennel kijelentem, hogy a feladatot magam keszitettem, es ha barmilyen segitseget igenybe vettem vagy
+// mas szellemi termeket felhasznaltam, akkor a forrast es az atvett reszt kommentekben egyertelmuen jeloltem.
+// A forrasmegjeloles kotelme vonatkozik az eloadas foliakat es a targy oktatoi, illetve a
+// grafhazi doktor tanacsait kiveve barmilyen csatornan (szoban, irasban, Interneten, stb.) erkezo minden egyeb
+// informaciora (keplet, program, algoritmus, stb.). Kijelentem, hogy a forrasmegjelolessel atvett reszeket is ertem,
+// azok helyessegere matematikai bizonyitast tudok adni. Tisztaban vagyok azzal, hogy az atvett reszek nem szamitanak
+// a sajat kontribucioba, igy a feladat elfogadasarol a tobbi resz mennyisege es minosege alapjan szuletik dontes.
+// Tudomasul veszem, hogy a forrasmegjeloles kotelmenek megsertese eseten a hazifeladatra adhato pontokat
+// negativ elojellel szamoljak el es ezzel parhuzamosan eljaras is indul velem szemben.
+//=============================================================================================//=============================================================================================
 
 #include "framework.h"
-// TODO mindenhol ezt az ambienst használni:
-// textúrák, meg az alap, ahol van, talán shaderben
-const vec3 AMBIENT = vec3(0.4, 0.4, 0.4);
 
-//---------------------------
-template<class T> struct Dnum { // Dual numbers for automatic derivation
-//---------------------------
-	float f; // function value
+template<class T> struct Dnum {
+	float f;
 
-	T d;  // derivatives
+	T d;
 	Dnum(float f0 = 0, T d0 = T(0)) { f = f0, d = d0; }
 	Dnum operator+(Dnum r) { return Dnum(f + r.f, d + r.d); }
 	Dnum operator-(Dnum r) { return Dnum(f - r.f, d - r.d); }
@@ -32,7 +46,6 @@ template<class T> struct Dnum { // Dual numbers for automatic derivation
 	}
 };
 
-// Elementary functions prepared for the chain rule as well
 template<class T> Dnum<T> Exp(Dnum<T> g) { return Dnum<T>(expf(g.f), expf(g.f)*g.d); }
 template<class T> Dnum<T> Sin(Dnum<T> g) { return  Dnum<T>(sinf(g.f), cosf(g.f)*g.d); }
 template<class T> Dnum<T> Cos(Dnum<T>  g) { return  Dnum<T>(cosf(g.f), -sinf(g.f)*g.d); }
@@ -51,11 +64,9 @@ const int tessellationLevel = 100;
 
 const int windowWidth = 600, windowHeight = 600;
 
-//---------------------------
-struct Camera { // 3D camera
-//---------------------------
-	vec3 wEye, wLookat, wVup;   // extrinsic
-	float fov, asp, fp, bp;		// intrinsic
+struct Camera {
+	vec3 wEye, wLookat, wVup;
+	float fov, asp, fp, bp;
 public:
 	Camera() {
 		asp = (float)windowWidth / windowHeight;
@@ -66,18 +77,14 @@ public:
 	mat4 P() { return perspective(fov, asp, fp, bp); }
 };
 
-//---------------------------
 struct Material {
-//---------------------------
 	vec3 kd, ks, ka;
 	float shininess;
 };
 
-//---------------------------
 struct Light {
-//---------------------------
 	vec3 La, Le;
-	vec4 wLightPos; // homogeneous coordinates, can be at ideal point
+	vec4 wLightPos;
 };
 
 struct Triangle{
@@ -85,9 +92,7 @@ struct Triangle{
 };
 
 std::vector<Triangle> allTriangles;
-//---------------------------
 struct RenderState {
-//---------------------------
 	mat4	           MVP, M, Minv, V, P;
 	Material *         material;
 	std::vector<Light> lights;
@@ -95,9 +100,7 @@ struct RenderState {
 	vec3	           wEye;
 };
 
-//---------------------------
 class Shader : public GPUProgram {
-//---------------------------
 public:
 	virtual void Bind(RenderState state) = 0;
 
@@ -121,54 +124,37 @@ public:
 			setUniform(t.B, std::string("allTriangles[") + std::to_string(i) +std::string("].B"));
 			setUniform(t.C, std::string("allTriangles[") + std::to_string(i) +std::string("].C"));
 		}
-
-		printf("Uniform triangles are set, size: %zu\n", allTriangles.size());
 	}
 };
 
-//---------------------------
 class PhongShader : public Shader {
-//---------------------------
 	const char * vertexSource = R"(
 		#version 330 core
 		precision highp float;
 
-		struct Light {
-			vec3 La, Le;
-			vec4 wLightPos;
-		};
-
-		uniform mat4  MVP, M, Minv; // MVP, Model, Model-inverse
-		uniform Light[8] lights;    // light sources
-		uniform int   nLights;
-		uniform vec3  wEye;         // pos of eye
+		uniform mat4  MVP, M, Minv;
+		uniform vec3  wEye;
 
 
-		layout(location = 0) in vec3  vtxPos;            // pos in modeling space
-		layout(location = 1) in vec3  vtxNorm;      	 // normal in modeling space
+		layout(location = 0) in vec3  vtxPos;
+		layout(location = 1) in vec3  vtxNorm;
 		layout(location = 2) in vec2  vtxUV;
 
 		out vec3 wPosition;
-		out vec3 wNormal;		    // normal in world space
-		out vec3 wView;             // view in world space
-		out vec3 wLight[8];		    // light dir in world space
+		out vec3 wNormal;
+		out vec3 wView;
 		out vec2 texcoord;
 
 		void main() {
-			// gl_Position = vec4(vtxPos, 1) * MVP; // to NDC
-			gl_Position = MVP * vec4(vtxPos, 1); // Saját
-			// vectors for radiance computation
-			// vec4 wPos = vec4(vtxPos, 1) * M;
-			vec4 wPos = M * vec4(vtxPos, 1); // Saját
+			gl_Position = MVP * vec4(vtxPos, 1);
+			vec4 wPos = M * vec4(vtxPos, 1);
 		    wView  = wEye * wPos.w - wPos.xyz;
-		    // wNormal = (Minv * vec4(vtxNorm, 0) ).xyz;
-		    wNormal = (vec4(vtxNorm, 0) * Minv).xyz; // Saját, nem biztos hogy jó
+		    wNormal = (vec4(vtxNorm, 0) * Minv).xyz;
 		    texcoord = vtxUV;
 			wPosition = wPos.xyz;
 		}
 	)";
 
-	// fragment shader in GLSL
 	const char * fragmentSource = R"(
 		#version 330 core
 		precision highp float;
@@ -188,27 +174,22 @@ class PhongShader : public Shader {
 		uniform Triangle allTriangles[62];
 
 		in  vec3 wPosition;
-		in  vec3 wNormal;       // interpolated world sp normal
-		in  vec3 wView;         // interpolated world sp view
+		in  vec3 wNormal;
+		in  vec3 wView;
 		in  vec2 texcoord;
 
-        out vec4 fragmentColor; // output goes to frame buffer
+        out vec4 fragmentColor;
 
 		void main() {
 			vec3 N = normalize(wNormal);
 			vec3 V = normalize(wView);
-			if (dot(N, V) < 0) N = -N;	// prepare for one-sided surfaces like Mobius or Klein
-			// Alapból ez, hogy amikor szorozzuk, csak átjöjjön a ka, kd
+			if (dot(N, V) < 0) N = -N;
 			vec3 texColor = vec3(1, 1, 1);
 			if(textured){
 				texColor = texture(diffuseTexture, texcoord).rgb;
 			}
 			vec3 ka = material.ka * texColor;
 			vec3 kd = material.kd * texColor;
-
-			// textúrázunk trükkösen
-			// vec3 ka = material.ka;
-			// vec3 kd = material.kd;
 
 			vec3 radiance = vec3(0, 0, 0);
 
@@ -248,12 +229,9 @@ class PhongShader : public Shader {
 				}
 			}
 
-			// Csak egy fényforrás van, egyelőre hardcodeolom a shaderbe
-			// Iránya 1, 1, 1
 			vec3 L = normalize(vec3(1, 1, 1));
 			vec3 H = normalize(L + V);
 			float cost = max(dot(N,L), 0), cosd = max(dot(N,H), 0);
-			// Ambiens 0.4, 0.4, 0.4, rendes sugársűrűség 2, 2, 2
 
 			ka = kd*3;
 			radiance += ka*vec3(0.4, 0.4, 0.4);
@@ -269,15 +247,13 @@ public:
 	}
 
 	void Bind(RenderState state) {
-		Use(); 		// make this program run
+		Use();
 		setUniform(state.MVP, "MVP");
 		setUniform(state.M, "M");
 		setUniform(state.Minv, "Minv");
 		setUniform(state.wEye, "wEye");
 		if (state.texture != nullptr){
-			// ne legyen fura blend
 			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-			(*state.texture, std::string("diffuseTexture"));
 		}
 		setUniformMaterial(*state.material, "material");
 		setUniformTriangles();
@@ -291,9 +267,7 @@ struct VertexData {
 	vec2 texcoord;
 };
 
-//---------------------------
 class ParamSurface : public Geometry<VertexData> {
-//---------------------------
 	unsigned int nVtxPerStrip, nStrips;
 	std::vector<Triangle> modelTriangles;
 public:
@@ -314,19 +288,17 @@ public:
 	}
 
 	void create(int N = tessellationLevel, int M = tessellationLevel) {
-		nVtxPerStrip = (M + 1) * 2; // kifejezetten a for loopból kitalálva
+		nVtxPerStrip = (M + 1) * 2;
 		nStrips = N;
-		std::vector<VertexData> vtxData;	// vertices on the CPU
+		std::vector<VertexData> vtxData;
 		for (int i = 0; i < N; i++) {
 			for (int j = 0; j <= M; j++) {
 				vtxData.push_back(GenVertexData((float)j / M, (float)i / N));
 				vtxData.push_back(GenVertexData((float)j / M, (float)(i + 1) / N));
 			}
 		}
-		// printf("#of points in a generated geometry: %d\n", nVtxPerStrip * nStrips);
-		// manuális visszaállítás a vtxData-ból
 
-		for(int i = 2; i<vtxData.size(); i++){
+		for(size_t i = 2; i<vtxData.size(); i++){
 			Triangle t;
 			t.A = vtxData[i-2].position;
 			t.B = vtxData[i-1].position;
@@ -340,11 +312,11 @@ public:
 		}
 
 		glBufferData(GL_ARRAY_BUFFER, nVtxPerStrip * nStrips * sizeof(VertexData), &vtxData[0], GL_STATIC_DRAW);
-		// Enable the vertex attribute arrays
-		glEnableVertexAttribArray(0);  // attribute array 0 = POSITION
-		glEnableVertexAttribArray(1);  // attribute array 1 = NORMAL
-		glEnableVertexAttribArray(2);  // attribute array 2 = TEXCOORD0
-		// attribute array, components/attribute, component type, normalize?, stride, offset
+
+		glEnableVertexAttribArray(0);
+		glEnableVertexAttribArray(1);
+		glEnableVertexAttribArray(2);
+
 		glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(VertexData), (void*)offsetof(VertexData, position));
 		glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(VertexData), (void*)offsetof(VertexData, normal));
 		glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(VertexData), (void*)offsetof(VertexData, texcoord));
@@ -360,41 +332,21 @@ public:
 	}
 };
 
-//---------------------------
-class Sphere : public ParamSurface {
-//---------------------------
-public:
-	Sphere() { create(100, 100); }
-	void eval(Dnum2& U, Dnum2& V, Dnum2& X, Dnum2& Y, Dnum2& Z) {
-		// TODO Itt miért van egy vessző?
-		U = U * 2.0f * (float)M_PI; V = V * (float)M_PI;
-		X = Cos(U) * Sin(V); Y = Sin(U) * Sin(V); Z = Cos(V);
-	}
-};
-
-//---------------------------
 class Cylinder : public ParamSurface {
-//---------------------------
 
 public:
 	Cylinder() { create(1, 6); }
 	void eval(Dnum2& U, Dnum2& V, Dnum2& X, Dnum2& Y, Dnum2& Z) {
 		U = U * 2.0f * M_PI, V = V * 2;
 		X = Cos(U) * 0.3; Z = Sin(U) * 0.3; Y = V;
-		// vec3 drdU(X.d.x, Y.d.x, Z.d.x), drdV(X.d.y, Y.d.y, Z.d.y);
-		// vec3 normvec = cross(drdU, drdV);
-		// printf("Normvec: %.2f, %.2f, %.2f\n", normvec.x, normvec.y, normvec.z);
 	}
 };
 
-// 45 fokos, majd scale megoldja?
 class Cone : public ParamSurface{
 
 public:
-	// Cone() { create(10, 60); }
 	Cone() { create(1, 6); }
 	void eval(Dnum2& U, Dnum2& V, Dnum2& X, Dnum2& Y, Dnum2& Z) {
-		// TODO kivinni mert konstans
 		float angle = 0.2;
 		float height = 2.0;
 		float bottom_radius = tanf(angle/2) * height;
@@ -404,7 +356,6 @@ public:
 };
 
 class Square : public ParamSurface{
-	// TODO lehet manuálisan?
 public:
 	Square() { create(1, 1); }
 	void eval(Dnum2& U, Dnum2& V, Dnum2& X, Dnum2& Y, Dnum2& Z) {
@@ -413,9 +364,7 @@ public:
 	}
 };
 
-//---------------------------
 struct Object3D {
-//---------------------------
 	Shader *   shader;
 	Material * material;
 	Texture *  texture;
@@ -475,8 +424,6 @@ public:
 		}
 		return transformedTriangles;
 	}
-
-	virtual void Animate(float tstart, float tend) { rotationAngle = 0.8f * tend; }
 };
 
 struct ConeObj : Object3D{
@@ -494,11 +441,9 @@ struct ConeObj : Object3D{
 	}
 };
 
-//---------------------------
 struct Scene {
-//---------------------------
 	std::vector<Object3D *> objects;
-	Camera camera; // 3D camera
+	Camera camera;
 	std::vector<Light> lights;
 	std::vector<vec3> texture;
 public:
@@ -507,7 +452,6 @@ public:
 		vec3 white = vec3(0.3, 0.3, 0.3);
 		for(int i = 0; i < 20; i++){
 			for(int j = 0; j < 20; j++){
-				// TODO paritás ellenőrzés, jó-e?
 				vec3 active = white;
 				if((i + j) % 2 == 0){
 					active = blue;
@@ -517,45 +461,23 @@ public:
 		}
 	}
 	void Build() {
-		// Shaders
 		Shader * phongShader = new PhongShader();
 
-		ParamSurface* sphere = new Sphere();
 		ParamSurface* cylinder = new Cylinder();
 		ParamSurface* cone = new Cone();
 		ParamSurface* square = new Square();
 
-		// TODO nem kell
-		Material * yellowPointerMaterial = new Material;
-		yellowPointerMaterial->kd = vec3(1, 1, 0);
-		yellowPointerMaterial->ks = vec3(0, 0, 0);
-		yellowPointerMaterial->ka = vec3(0.5f, 0.5f, 0);
-		yellowPointerMaterial->shininess = 100;
-
-		Object3D * pointerSphere = new Object3D(phongShader, yellowPointerMaterial, nullptr, sphere);
-		vec3 base = vec3(0, 1, 0.8);
-		vec3 dir = normalize(vec3(0.2, -1, 0));
-		pointerSphere->translation = base + dir * 2;
-
-		pointerSphere->scaling = vec3(1, 1, 1) * 0.4;
-		// objects.push_back(pointerSphere);
-
-
-		// ezek nem phong blinn stílusúak?
 		Material* firstCylinderMaterial = new Material;
 		firstCylinderMaterial->kd = vec3(0.17, 0.35, 1.5);
 		firstCylinderMaterial->ks = vec3(3.1, 2.7, 1.9);
-		// TODO Ez lehet nem is ennyi
 		firstCylinderMaterial->shininess = 100;
 
-		// TODO kiemelni?
 		Object3D * firstCylinder = new Object3D(phongShader, firstCylinderMaterial, nullptr, cylinder);
 		firstCylinder->translation = vec3(1, -1, 0);
 		vec3 firstAxis = normalize(vec3(0.1, 1, 0));
 		firstCylinder->rotationAngle = -acosf(dot(firstAxis, vec3(0, 1, 0)));
 		firstCylinder->rotationAxis = normalize(cross(firstAxis, vec3(0, 1, 0)));
 
-		// --- SECOND CYLINDER ---
 		Material* secondCylinderMaterial = new Material;
 		secondCylinderMaterial->kd = vec3(1.3, 1.3, 1.3);
 		secondCylinderMaterial->ks = vec3(0, 0, 0);
@@ -568,7 +490,6 @@ public:
 		secondCylinder->rotationAngle = -acosf(dot(secondAxis, vec3(0, 1, 0)));
 		secondCylinder->rotationAxis = normalize(cross(secondAxis, vec3(0, 1, 0)));
 
-		// --- THIRD CYLINDER ---
 		Material* thirdCylinderMaterial = new Material;
 		thirdCylinderMaterial->kd = vec3(0.3, 0.2, 0.1);
 		thirdCylinderMaterial->ks = vec3(2, 2, 2);
@@ -605,7 +526,6 @@ public:
 		kockas->updateTexture(20, 20, texture);
 		Object3D * floor = new Object3D(phongShader, texture_material, kockas, square);
 		floor->translation = vec3(0, -1, 0);
-		// TODO jól beállítani a méretet
 		floor->scaling = vec3(20, 1, 20);
 
 		objects.push_back(firstCylinder);
@@ -615,35 +535,16 @@ public:
 		objects.push_back(magentaCone);
 		objects.push_back(floor);
 
-		int i = 0;
 		for(Object3D* o : objects){
 			auto trias = o->getTriangles();
 			for(Triangle t : trias){
 				allTriangles.push_back(t);
-				// printf("%.2f, %.2f, %.2f\n", t.A.x, t.A.y, t.A.z);
 			}
 		}
-		// Triangle t = allTriangles[37];
-		// printf("%.2f, %.2f, %.2f\n", t.A.x, t.A.y, t.A.z);
-		// printf("%.2f, %.2f, %.2f\n", t.B.x, t.B.y, t.B.z);
-		// printf("%.2f, %.2f, %.2f\n", t.C.x, t.C.y, t.C.z);
 
-
-		// Camera
-		// EZ AZ OK
-		// camera.wEye = vec3(0, 1, 4);
-		printf("Rossz kamera");
-		// nem lehet 0 wEye?
 		camera.wEye = vec3(0, 1, 4);
 		camera.wLookat = vec3(0, 0, 0);
 		camera.wVup = vec3(0, 1, 0);
-
-		// Fények beégetve
-		// Lights
-		// lights.resize(1);
-		// lights[0].wLightPos = vec4(5, 5, 4, 0);	// ideal point -> directional light source
-		// lights[0].La = vec3(0, 0, 0);
-		// lights[0].Le = vec3(1, 1, 1);
 	}
 
 	void Render() {
@@ -654,15 +555,6 @@ public:
 		state.lights = lights;
 		for (Object3D * obj : objects) obj->Draw(state);
 	}
-
-	void Animate(float tstart, float tend) {
-		float dt = tend-tstart;
-
-		// TODO automatikus forgás a teszteléshez
-		float r = 3.0;
-
-		for (Object3D * obj : objects) obj->Animate(tstart, tend);
-	}
 };
 
 class EngineApp : public glApp {
@@ -671,29 +563,18 @@ public:
 	EngineApp() : glApp(3, 3, windowWidth, windowHeight, "3D Engine-ke") { }
 
 	void onInitialization() {
-		// TODO NEM KELL OP SYS SCALE
-		glViewport(0, 0, windowWidth*OP_SYS_SCALE, windowHeight*OP_SYS_SCALE);
+		glViewport(0, 0, windowWidth, windowHeight);
 		glEnable(GL_DEPTH_TEST);
 		glDisable(GL_CULL_FACE);
 		scene.Build();
 	}
 	void onDisplay() {
-		glClearColor(0.5, 0.5f, 0.5f, 1.0f);				// background color
-		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT); // clear the screen
+		glClearColor(0.5, 0.5f, 0.5f, 1.0f);
+		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 		scene.Render();
 	}
 	void onKeyboard(int key){
 		if(key != 'a' && key != 'd') return;
-
-		// LINUX DEBOUNCE
-		// static bool debounce = true;
-		// if(debounce){
-		// 	debounce = false;
-		// 	return;
-		// }
-		// debounce = true;
-
-		printf("Pressed %c\n", key);
 
 		float x = scene.camera.wEye.x;
 		float z = scene.camera.wEye.z;
@@ -708,11 +589,6 @@ public:
 		scene.camera.wEye.z = sin(theta) * 4.0;
 		scene.camera.wEye.y = 1;
 
-		vec3 campos = scene.camera.wEye;
-		printf("Camera pos: %.2f, %.2f, %.2f", campos.x, campos.y, campos.z);
-	}
-	void onTimeElapsed(float tstart, float tend) {
-		// scene.Animate(tstart, tend);
 		refreshScreen();
 	}
 } app;
