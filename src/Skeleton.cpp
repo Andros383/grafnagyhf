@@ -7,7 +7,7 @@
 #include <system_error>
 #include <tuple>
 #include <vector>
-const float OP_SYS_SCALE = 1.0;
+const float OP_SYS_SCALE = 2.0;
 
 
 #include "framework.h"
@@ -686,12 +686,12 @@ public:
 		if(key != 'a' && key != 'd') return;
 
 		// LINUX DEBOUNCE
-		// static bool debounce = true;
-		// if(debounce){
-		// 	debounce = false;
-		// 	return;
-		// }
-		// debounce = true;
+		static bool debounce = true;
+		if(debounce){
+			debounce = false;
+			return;
+		}
+		debounce = true;
 
 		printf("Pressed %c\n", key);
 
