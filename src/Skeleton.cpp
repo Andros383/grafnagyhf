@@ -32,12 +32,20 @@
 // Nagyhf
 
 #include "framework.h"
+#include <cerrno>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
-#include <iterator>
-#include <system_error>
+#include <regex>
+#include <stdexcept>
+#include <type_traits>
 
+struct Scene;
 const int OP_SYS_SCALE = 2;
+
+float random_float(float min, float max){
+	return min + ((float)rand() / (float)RAND_MAX) *(max - min);
+}
 
 void printvec(vec3 p, std::string name = ""){
 	printf("%s : (%.2f, %.2f, %.2f\n", name.c_str(), p.x, p.y , p.z);
@@ -74,7 +82,7 @@ typedef Dnum<vec2> Dnum2;
 
 const int tessellationLevel = 100;
 
-const int windowWidth = 600, windowHeight = 600;
+const int windowWidth = 900, windowHeight = 900;
 
 struct Camera {
 	vec3 wEye, wLookat, wVup;
@@ -108,7 +116,6 @@ std::vector<Triangle> allTriangles;
 struct RenderState {
 	mat4	           MVP, M, Minv, V, P;
 	Material *         material;
-	std::vector<Light> lights;
 	Texture *          texture;
 	vec3	           wEye;
 };
@@ -360,81 +367,71 @@ public:
 		}
 		shader->Bind(state);
 		geometry->Draw();
-		printf("Majdnem kész\n");
-	}
-};
-
-struct ConeObj : Object3D{
-	vec3 axis, tip;
-	ConeObj(vec3 _tip, vec3 _axis, Shader * _shader, Material * _material, Texture * _texture, ParamSurface* _geometry) :
-	Object3D(_shader, _material, _texture, _geometry){
-		tip = _tip;
-		axis = -_axis;
-	}
-	void SetModelingTransform(mat4 &M, mat4 &Minv) override{
-		rotationAngle = -acosf(dot(normalize(axis), normalize(vec3(0, 1, 0))));
-		rotationAxis = normalize(cross(axis, vec3(0, 1, 0)));
-		M = translate(tip) * rotate(rotationAngle, rotationAxis) * scale(scaling);
-		Minv = scale(vec3(1 / scaling.x, 1 / scaling.y, 1 / scaling.z)) * rotate(-rotationAngle, rotationAxis) * translate(-translation);
 	}
 };
 
 struct GameObject{
 	vec3 pos, vel, accel;
-	vec3 npos, nvel, naccel;
 	bool alive = true;
 	// Lehet nem is kell, mert nem hatnak nagyon egymásra az objektumok
 	// TODO kell-e pontosabb a parabolapályához?
-	virtual void Control(float tstart, float tend){
-		float dt = tend - tstart;
-		npos = pos + vel*dt;
-		nvel = vel + accel*dt;
+	virtual void Control(float tstart, float tend, Scene* scene){
 	}
 	// szerintem minden ugyan így lesz animálva
 	// valahol a Control-ba szerintem kéne a megölése
-	virtual void Animate(){
-		pos = npos;
-		vel = nvel;
-		accel = naccel;
-		npos = NULL;
-		nvel = NULL;
-		naccel = NULL;
+	virtual void Animate(float tstart, float tend){
+		float dt = tend - tstart;
+		// általános dolog
+		pos += vel*dt;
+		vel += accel*dt;
 	};
 
 	virtual void Draw(RenderState) = 0;
+
+	virtual ~GameObject() = default;
 };
 
-struct Canonball : GameObject{
+struct Cannonball : GameObject{
 	Material* material;
 	ParamSurface* surface;
 	Object3D* object;
-	Canonball(Shader* _shader){
-		material = new Material();
-		material->kd = vec3(1, 0, 0);
-		// material->kd = vec3(0.2, 0.2, 0.2);
-		material->ks = vec3(1, 0, 0);
-		material->ka = vec3(0.1, 0.1, 0.1);
-		material->shininess = 10;
+	Cannonball(Shader* _shader){
+		Material* material = new Material();
+		material->kd = vec3(0.01, 0.01, 0.01);
+		material->ks = vec3(1, 1, 1);
+		material->shininess = 100;
 
-		surface = new Sphere();
+		ParamSurface* surface = new Sphere();
 
 		object = new Object3D(_shader, material, nullptr, surface);
+		object->scaling = vec3(0.25, 0.25, 0.25);
+		accel = vec3(0, -1, 0);
 		// TODO ide ha kell scaling
 	}
-	void Draw(RenderState renderState){
+	void Control(float tstart, float tend, Scene* scene) override{
+		if(this->pos.y < -100) alive = false;
+	}
+	void Draw(RenderState renderState) override{
 		object->translation = pos;
-		printvec(object->translation);
 		object->Draw(renderState);
+	}
+	~Cannonball() override{
+		delete object;
 	}
 };
 
 struct Floor : GameObject{
-	Material* material;
-	ParamSurface* surface;
-	Texture* texture;
 	Object3D* object;
-	std::vector<vec3> textureData;
-	void generateTexture(){
+	Floor(Shader* _shader){
+		Material* material = new Material();
+		material->kd = vec3(0, 1, 0);
+		// material->kd = vec3(0.2, 0.2, 0.2);
+		material->ka = vec3(0.1, 0.1, 0.1);
+
+		ParamSurface* surface = new Square();
+
+
+		std::vector<vec3> texture;
 		vec3 blue = vec3(0, 0.1, 0.3);
 		vec3 white = vec3(0.3, 0.3, 0.3);
 		for(int i = 0; i < 20; i++){
@@ -443,32 +440,132 @@ struct Floor : GameObject{
 				if((i + j) % 2 == 0){
 					active = blue;
 				}
-				textureData.push_back(active);
+				texture.push_back(active);
 			}
 		}
-	}
-	Floor(Shader* _shader){
-		material = new Material;
-		material->kd = vec3(1, 1, 1);
-		material->ks = vec3(0, 0, 0);
-		material->ka = vec3(0, 0, 0);
-		surface = new Square();
 
-		texture = new Texture(20, 20);
-		generateTexture();
-		texture->updateTexture(20, 20, textureData);
-		Object3D * floor = new Object3D(_shader, material, texture, surface);
-		floor->translation = vec3(0, -1, 0);
-		floor->scaling = vec3(20, 1, 20);
+		Texture* kockas = new Texture(20, 20);
+		kockas->updateTexture(20, 20, texture);
+
+		object = new Object3D(_shader, material, kockas, surface);
+
+		object->scaling = vec3(50, 1, 50);
+		pos = vec3(0, -1, 0);
 	}
-	void Draw(RenderState renderState){
+	void Draw(RenderState renderState) override{
+		object->translation = pos;
 		object->Draw(renderState);
-		printf("Kész a Floor draw\n");
+	}
+
+	~Floor() override{
+		delete object;
 	}
 };
+
+struct Cannon : GameObject{
+	static float MAX_SHOOT_TIME;
+	static float MIN_SHOOT_TIME;
+	static float MIN_SHOOT_SPEED;
+	static float MAX_SHOOT_SPEED;
+
+	Scene* scene;
+	Object3D* barrel;
+	Object3D* body;
+
+	vec3 rotationDir = vec3(0, 1, 0);
+	float nextShoot = 1.5;
+	Cannon(Shader* _shader, Scene* _scene){
+		scene = _scene;
+
+		Material* material = new Material();
+		material->kd = vec3(0.1, 0.1, 0.1);
+		material->ks = material->kd * 2;
+		material->ka = material->kd * 3;
+		material->shininess = 100;
+
+		ParamSurface* body_surface = new Sphere();
+
+		body = new Object3D(_shader, material, nullptr, body_surface);
+		body->scaling = vec3(0.5, 0.5, 0.5);
+
+		ParamSurface* barrel_surface = new Cylinder();
+		barrel = new Object3D(_shader, material, nullptr, barrel_surface);
+		barrel->scaling = vec3(0.3, 1.5, 0.3);
+	}
+	void Draw(RenderState renderState) override{
+		body->translation = pos;
+		barrel->translation = pos;
+
+		vec3 up = vec3(0, 1, 0);
+
+		barrel->rotationAngle = acosf(dot(normalize(up), normalize(rotationDir)));
+		if(abs(barrel->rotationAngle)>0.05f){
+			// Ha kicsi, ne forgassuk, fajul a cross product
+			barrel->rotationAxis = cross(normalize(up), normalize(rotationDir));
+		}
+
+		body->Draw(renderState);
+		barrel->Draw(renderState);
+	}
+
+
+	void Control(float tstart, float tend, Scene* scene) override{
+		float dt = tend-tstart;
+		nextShoot -= dt;
+		if(nextShoot > 0) return;
+
+		nextShoot = random_float(MIN_SHOOT_TIME, MAX_SHOOT_TIME);
+
+		Shoot();
+	}
+
+	void Shoot();
+
+	~Cannon() override{
+		delete body;
+	}
+};
+
+struct Laser : GameObject{
+	Material* material;
+	ParamSurface* surface;
+	Object3D* object;
+	Laser(Shader* _shader){
+		Material* material = new Material();
+		material->kd = vec3(1, 0.01, 0.01);
+
+		ParamSurface* surface = new Cylinder();
+
+		object = new Object3D(_shader, material, nullptr, surface);
+		object->scaling = vec3(0.025, 1, 0.025);
+	}
+	void Draw(RenderState renderState) override{
+		object->translation = pos;
+
+		vec3 up = vec3(0, 1, 0);
+
+		object->rotationAngle = acosf(dot(normalize(up), normalize(vel)));
+		if(abs(object->rotationAngle)>0.05f){
+			// Ha kicsi, ne forgassuk, fajul a cross product
+			object->rotationAxis = cross(normalize(up), normalize(vel));
+		}
+
+		object->Draw(renderState);
+	}
+
+	~Laser() override{
+		delete object;
+	}
+};
+float Cannon::MIN_SHOOT_TIME = 2.0;
+float Cannon::MAX_SHOOT_TIME = 10.0;
+float Cannon::MIN_SHOOT_SPEED = 1.0;
+float Cannon::MAX_SHOOT_SPEED = 10.0;
+
 struct Scene {
 	Shader* phongShader;
-	std::vector<GameObject *> objects;
+	int current = 0;
+	std::vector<GameObject *> objects[2];
 	Camera camera;
 	std::vector<vec3> texture;
 public:
@@ -485,28 +582,103 @@ public:
 			}
 		}
 	}
-	void Build() {
-		phongShader = new PhongShader();
+	void testBuild(){
+		GameObject* laser = new Laser(phongShader);
+		Join(laser);
 
-		GameObject* ball = new Canonball(phongShader);
-		GameObject* floor = new Floor(phongShader);
-
-		objects.push_back(ball);
-		objects.push_back(floor);
-
-		camera.wEye = vec3(0, 10, 2);
-		camera.wLookat = vec3(0, 0, 0);
-		camera.wVup = vec3(0, 1, 0);
+		GameObject* ball = new Cannonball(phongShader);
+		ball->accel = vec3(0, 0, 0);
+		Join(ball);
 	}
 
+	void Build() {
+		phongShader = new PhongShader();
+		camera.wEye = vec3(0, 10, 50);
+		camera.wLookat = vec3(0, 0, 0);
+		camera.wVup = vec3(0, 1, 0);
+
+		// camera.wEye = vec3(0, 1, 5);
+		// testBuild();
+		// return;
+
+
+		GameObject* ball = new Cannonball(phongShader);
+		GameObject* floor = new Floor(phongShader);
+
+		for(int i = 0; i<10; i++){
+			GameObject* cannon = new Cannon(phongShader, this);
+			cannon->pos = vec3(-20, 0, i*2 - 9.5);
+			Join(cannon);
+		}
+
+		ball->accel = vec3(0, -1, 0);
+		ball->vel = vec3(-1, 3, 0);
+		ball->pos = vec3(10, 5, 0);
+		Join(ball);
+		Join(floor);
+
+	}
+	void Join(GameObject* o){
+		objects[1-current].push_back(o);
+	}
 	void Render() {
 		RenderState state;
 		state.wEye = camera.wEye;
 		state.V = camera.V();
 		state.P = camera.P();
-		for (GameObject * obj : objects) obj->Draw(state);
+		for (GameObject * obj : objects[current]) obj->Draw(state);
+	}
+	void Simulate(float tstart, float tend){
+		const float dt = 0.05f; // dt kicsi
+		for (float t = tstart; t < tend; t += dt) {
+			float Dt = fmin(dt, tend - t);
+			for (auto * obj : objects[current]){
+				obj->Control(t, t + Dt, this);
+			}
+			for (auto * obj : objects[current]) {
+				if (obj->alive) Join(obj); // élők az új tömbbe
+				else{
+					delete obj; // nem élők törlése
+				}
+			}
+			objects[current].clear();
+			current = 1 - current; // ping-pong
+			for (auto * obj : objects[current]) obj->Animate(t, t + Dt);
+		}
+	}
+	void addCannonball(vec3 startpos, vec3 startvel){
+		GameObject* cannonball = new Cannonball(phongShader);
+		cannonball->pos = startpos;
+		cannonball->vel = startvel;
+		Join(cannonball);
+	}
+
+	void ShootLaser(){
+		GameObject* laser = new Laser(phongShader);
+		laser->pos = vec3(0, 0, 0);
+		vec3 laser_dir = normalize(vec3(1, 1, 1));
+		// TODO constant
+		float laser_speed = 5;
+		laser->vel = laser_dir*laser_speed;
+		Join(laser);
 	}
 };
+
+void Cannon::Shoot(){
+		float speed = random_float(Cannon::MIN_SHOOT_SPEED, Cannon::MAX_SHOOT_SPEED);
+		float horiz_angle = random_float(-M_PI_4, M_PI_4);
+		float vert_angle = random_float(M_PI / 8.0, M_PI_2 - M_PI / 8.0);
+
+		vec3 shoot_dir;
+		shoot_dir.x = cosf(horiz_angle) * cosf(vert_angle);
+		shoot_dir.y = sinf(vert_angle);
+		shoot_dir.z = sinf(horiz_angle) * cosf(vert_angle);
+
+		rotationDir = shoot_dir;
+		printvec(shoot_dir, std::string("shoot_dir"));
+
+		scene->addCannonball(pos, shoot_dir * speed);
+	}
 
 
 class EngineApp : public glApp {
@@ -518,7 +690,12 @@ public:
 		glViewport(0, 0, windowWidth*OP_SYS_SCALE, windowHeight*OP_SYS_SCALE);
 		glEnable(GL_DEPTH_TEST);
 		glDisable(GL_CULL_FACE);
+
+		srand(time(nullptr));
+
 		scene.Build();
+
+		scene.ShootLaser();
 	}
 	void onDisplay() {
 		glClearColor(0.5, 0.5f, 0.5f, 1.0f);
@@ -526,7 +703,6 @@ public:
 		scene.Render();
 	}
 	void onKeyboard(int key){
-
 		static bool debounce = true;
 		if(debounce){
 			debounce = false;
@@ -536,19 +712,25 @@ public:
 
 		if(key != 'a' && key != 'd') return;
 
+
 		float x = scene.camera.wEye.x;
 		float z = scene.camera.wEye.z;
+		float radius = std::sqrt(x*x + z*z);
+
 		float theta = atan2(z, x);
 		if(key == 'a'){
-			theta -= M_PI / 4;
+			theta += M_PI / 32;
 		}
 		if(key == 'd'){
-			theta += M_PI / 4;
+			theta -= M_PI / 32;
 		}
-		scene.camera.wEye.x = cos(theta) * 4.0;
-		scene.camera.wEye.z = sin(theta) * 4.0;
-		scene.camera.wEye.y = 1;
+		scene.camera.wEye.x = cos(theta) * radius;
+		scene.camera.wEye.z = sin(theta) * radius;
 
+		refreshScreen();
+	}
+	void onTimeElapsed(float startTime, float endTime){
+		scene.Simulate(startTime, endTime);
 		refreshScreen();
 	}
 } app;
