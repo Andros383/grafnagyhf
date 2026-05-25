@@ -29,7 +29,19 @@
 // negativ elojellel szamoljak el es ezzel parhuzamosan eljaras is indul velem szemben.
 //=============================================================================================//=============================================================================================
 
+// Nagyhf
+
 #include "framework.h"
+#include <cstdio>
+#include <cstdlib>
+#include <iterator>
+#include <system_error>
+
+const int OP_SYS_SCALE = 2;
+
+void printvec(vec3 p, std::string name = ""){
+	printf("%s : (%.2f, %.2f, %.2f\n", name.c_str(), p.x, p.y , p.z);
+}
 
 template<class T> struct Dnum {
 	float f;
@@ -71,7 +83,8 @@ public:
 	Camera() {
 		asp = (float)windowWidth / windowHeight;
 		fov = 45.0f * (float)M_PI / 180.0f;
-		fp = 1; bp = 20;
+		// TODO lehet túl közel van a backplane
+		fp = 1; bp = 300;
 	}
 	mat4 V() { return lookAt(wEye, wLookat, wVup); }
 	mat4 P() { return perspective(fov, asp, fp, bp); }
@@ -110,21 +123,6 @@ public:
 		setUniform(material.ka, name + ".ka");
 		setUniform(material.shininess, name + ".shininess");
 	}
-
-	void setUniformLight(const Light& light, const std::string& name) {
-		setUniform(light.La, name + ".La");
-		setUniform(light.Le, name + ".Le");
-		setUniform(light.wLightPos, name + ".wLightPos");
-	}
-
-	void setUniformTriangles(){
-		for(unsigned int i = 0; i < allTriangles.size(); i++){
-			Triangle t = allTriangles[i];
-			setUniform(t.A, std::string("allTriangles[") + std::to_string(i) +std::string("].A"));
-			setUniform(t.B, std::string("allTriangles[") + std::to_string(i) +std::string("].B"));
-			setUniform(t.C, std::string("allTriangles[") + std::to_string(i) +std::string("].C"));
-		}
-	}
 };
 
 class PhongShader : public Shader {
@@ -151,7 +149,6 @@ class PhongShader : public Shader {
 		    wView  = wEye * wPos.w - wPos.xyz;
 		    wNormal = (vec4(vtxNorm, 0) * Minv).xyz;
 		    texcoord = vtxUV;
-			wPosition = wPos.xyz;
 		}
 	)";
 
@@ -168,12 +165,6 @@ class PhongShader : public Shader {
 		uniform sampler2D diffuseTexture;
 		uniform bool textured;
 
-		struct Triangle{
-			vec3 A, B, C;
-		};
-		uniform Triangle allTriangles[62];
-
-		in  vec3 wPosition;
 		in  vec3 wNormal;
 		in  vec3 wView;
 		in  vec2 texcoord;
@@ -188,56 +179,18 @@ class PhongShader : public Shader {
 			if(textured){
 				texColor = texture(diffuseTexture, texcoord).rgb;
 			}
-			vec3 ka = material.ka * texColor;
 			vec3 kd = material.kd * texColor;
 
 			vec3 radiance = vec3(0, 0, 0);
-
-			bool inShadow = false;
-			for(int i = 0; i < 50; i++){
-				vec3 r1 = allTriangles[i].A;
-				vec3 r2 = allTriangles[i].B;
-				vec3 r3 = allTriangles[i].C;
-				vec3 shadowN = normalize(cross(r2 - r1, r3 - r1));
-				vec3 start = wPosition;
-				vec3 dir = normalize(vec3(1, 1, 1));
-
-				if(dot(dir, shadowN) > 0){
-					shadowN = -shadowN;
-				}
-
-				float D = dot(dir, shadowN);
-				if(abs(D) <= 0.001) continue;
-
-				float t = dot((r1-start), shadowN) / D;
-
-				if(t<=0.01) continue;
-
-				bool inside = true;
-
-				vec3 p = start + dir*t;
-				bool s1 = dot(cross(r2-r1, p-r1), shadowN) > 0.01;
-				bool s2 = dot(cross(r3-r2, p-r2), shadowN) > 0.01;
-				bool s3 = dot(cross(r1-r3, p-r3), shadowN) > 0.01;
-
-				bool insidePos = s1 && s2 && s3;
-				bool insideNeg = !s1 && !s2 && !s3;
-
-				if(insidePos || insideNeg){
-					inShadow = true;
-					break;
-				}
-			}
 
 			vec3 L = normalize(vec3(1, 1, 1));
 			vec3 H = normalize(L + V);
 			float cost = max(dot(N,L), 0), cosd = max(dot(N,H), 0);
 
-			ka = kd*3;
+			// Bennemarad, mint diffúz színezése
+			vec3 ka = kd*3;
 			radiance += ka*vec3(0.4, 0.4, 0.4);
-			if(!inShadow){
-				radiance += (kd * cost + material.ks * pow(cosd, material.shininess)) * vec3(2, 2, 2);
-			}
+			radiance += (kd * cost + material.ks * pow(cosd, material.shininess)) * vec3(2, 2, 2);
 			fragmentColor = vec4(radiance, 1);
 		}
 	)";
@@ -256,7 +209,6 @@ public:
 			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 		}
 		setUniformMaterial(*state.material, "material");
-		setUniformTriangles();
 	}
 };
 
@@ -332,20 +284,28 @@ public:
 	}
 };
 
-class Cylinder : public ParamSurface {
-
+class Sphere : public ParamSurface {
 public:
-	Cylinder() { create(1, 6); }
+	Sphere() { create(); }
 	void eval(Dnum2& U, Dnum2& V, Dnum2& X, Dnum2& Y, Dnum2& Z) {
-		U = U * 2.0f * M_PI, V = V * 2;
-		X = Cos(U) * 0.3; Z = Sin(U) * 0.3; Y = V;
+		U = U * 2.0f * (float)M_PI, V = V * (float)M_PI;
+		X = Cos(U) * Sin(V); Y = Sin(U) * Sin(V); Z = Cos(V);
+	}
+};
+
+class Cylinder : public ParamSurface {
+public:
+	Cylinder() { create(); }
+	void eval(Dnum2& U, Dnum2& V, Dnum2& X, Dnum2& Y, Dnum2& Z) {
+		U = U * 2.0f * M_PI, V = V;
+		X = Cos(U); Z = Sin(U); Y = V;
 	}
 };
 
 class Cone : public ParamSurface{
 
 public:
-	Cone() { create(1, 6); }
+	Cone() { create(); }
 	void eval(Dnum2& U, Dnum2& V, Dnum2& X, Dnum2& Y, Dnum2& Z) {
 		float angle = 0.2;
 		float height = 2.0;
@@ -365,7 +325,7 @@ public:
 };
 
 struct Object3D {
-	Shader *   shader;
+	Shader* shader;
 	Material * material;
 	Texture *  texture;
 	ParamSurface* geometry;
@@ -400,29 +360,7 @@ public:
 		}
 		shader->Bind(state);
 		geometry->Draw();
-	}
-	std::vector<Triangle> getTriangles(){
-		mat4 M, Minv;
-		SetModelingTransform(M, Minv);
-
-		std::vector<Triangle> transformedTriangles;
-		for(Triangle t : geometry->getModelTriangles()){
-			Triangle out;
-			vec4 a = vec4(t.A.x, t.A.y, t.A.z, 1);
-			vec4 at = M*a;
-			out.A = vec3(at.x, at.y, at.z);
-
-			vec4 b = vec4(t.B.x, t.B.y, t.B.z, 1);
-			vec4 bt = M*b;
-			out.B = vec3(bt.x, bt.y, bt.z);
-
-			vec4 c = vec4(t.C.x, t.C.y, t.C.z, 1);
-			vec4 ct = M*c;
-			out.C = vec3(ct.x, ct.y, ct.z);
-
-			transformedTriangles.push_back(out);
-		}
-		return transformedTriangles;
+		printf("Majdnem kész\n");
 	}
 };
 
@@ -441,10 +379,97 @@ struct ConeObj : Object3D{
 	}
 };
 
+struct GameObject{
+	vec3 pos, vel, accel;
+	vec3 npos, nvel, naccel;
+	bool alive = true;
+	// Lehet nem is kell, mert nem hatnak nagyon egymásra az objektumok
+	// TODO kell-e pontosabb a parabolapályához?
+	virtual void Control(float tstart, float tend){
+		float dt = tend - tstart;
+		npos = pos + vel*dt;
+		nvel = vel + accel*dt;
+	}
+	// szerintem minden ugyan így lesz animálva
+	// valahol a Control-ba szerintem kéne a megölése
+	virtual void Animate(){
+		pos = npos;
+		vel = nvel;
+		accel = naccel;
+		npos = NULL;
+		nvel = NULL;
+		naccel = NULL;
+	};
+
+	virtual void Draw(RenderState) = 0;
+};
+
+struct Canonball : GameObject{
+	Material* material;
+	ParamSurface* surface;
+	Object3D* object;
+	Canonball(Shader* _shader){
+		material = new Material();
+		material->kd = vec3(1, 0, 0);
+		// material->kd = vec3(0.2, 0.2, 0.2);
+		material->ks = vec3(1, 0, 0);
+		material->ka = vec3(0.1, 0.1, 0.1);
+		material->shininess = 10;
+
+		surface = new Sphere();
+
+		object = new Object3D(_shader, material, nullptr, surface);
+		// TODO ide ha kell scaling
+	}
+	void Draw(RenderState renderState){
+		object->translation = pos;
+		printvec(object->translation);
+		object->Draw(renderState);
+	}
+};
+
+struct Floor : GameObject{
+	Material* material;
+	ParamSurface* surface;
+	Texture* texture;
+	Object3D* object;
+	std::vector<vec3> textureData;
+	void generateTexture(){
+		vec3 blue = vec3(0, 0.1, 0.3);
+		vec3 white = vec3(0.3, 0.3, 0.3);
+		for(int i = 0; i < 20; i++){
+			for(int j = 0; j < 20; j++){
+				vec3 active = white;
+				if((i + j) % 2 == 0){
+					active = blue;
+				}
+				textureData.push_back(active);
+			}
+		}
+	}
+	Floor(Shader* _shader){
+		material = new Material;
+		material->kd = vec3(1, 1, 1);
+		material->ks = vec3(0, 0, 0);
+		material->ka = vec3(0, 0, 0);
+		surface = new Square();
+
+		texture = new Texture(20, 20);
+		generateTexture();
+		texture->updateTexture(20, 20, textureData);
+		Object3D * floor = new Object3D(_shader, material, texture, surface);
+		floor->translation = vec3(0, -1, 0);
+		floor->scaling = vec3(20, 1, 20);
+	}
+	void Draw(RenderState renderState){
+		object->Draw(renderState);
+		printf("Kész a Floor draw\n");
+	}
+};
 struct Scene {
-	std::vector<Object3D *> objects;
+	Shader* phongShader;
+	std::vector<GameObject *> objects;
 	Camera camera;
-	std::vector<Light> lights;
 	std::vector<vec3> texture;
 public:
 	void generateTexture(){
@@ -461,88 +486,15 @@ public:
 		}
 	}
 	void Build() {
-		Shader * phongShader = new PhongShader();
+		phongShader = new PhongShader();
 
-		ParamSurface* cylinder = new Cylinder();
-		ParamSurface* cone = new Cone();
-		ParamSurface* square = new Square();
+		GameObject* ball = new Canonball(phongShader);
+		GameObject* floor = new Floor(phongShader);
 
-		Material* firstCylinderMaterial = new Material;
-		firstCylinderMaterial->kd = vec3(0.17, 0.35, 1.5);
-		firstCylinderMaterial->ks = vec3(3.1, 2.7, 1.9);
-		firstCylinderMaterial->shininess = 100;
-
-		Object3D * firstCylinder = new Object3D(phongShader, firstCylinderMaterial, nullptr, cylinder);
-		firstCylinder->translation = vec3(1, -1, 0);
-		vec3 firstAxis = normalize(vec3(0.1, 1, 0));
-		firstCylinder->rotationAngle = -acosf(dot(firstAxis, vec3(0, 1, 0)));
-		firstCylinder->rotationAxis = normalize(cross(firstAxis, vec3(0, 1, 0)));
-
-		Material* secondCylinderMaterial = new Material;
-		secondCylinderMaterial->kd = vec3(1.3, 1.3, 1.3);
-		secondCylinderMaterial->ks = vec3(0, 0, 0);
-		secondCylinderMaterial->ka = secondCylinderMaterial->kd*3;
-		secondCylinderMaterial->shininess = 1;
-
-		Object3D * secondCylinder = new Object3D(phongShader, secondCylinderMaterial, nullptr, cylinder);
-		secondCylinder->translation = vec3(0, -1, -0.8);
-		vec3 secondAxis = normalize(vec3(-0.2, 1, -0.1));
-		secondCylinder->rotationAngle = -acosf(dot(secondAxis, vec3(0, 1, 0)));
-		secondCylinder->rotationAxis = normalize(cross(secondAxis, vec3(0, 1, 0)));
-
-		Material* thirdCylinderMaterial = new Material;
-		thirdCylinderMaterial->kd = vec3(0.3, 0.2, 0.1);
-		thirdCylinderMaterial->ks = vec3(2, 2, 2);
-		thirdCylinderMaterial->ka = thirdCylinderMaterial->kd*3;
-		thirdCylinderMaterial->shininess = 100;
-
-		Object3D * thirdCylinder = new Object3D(phongShader, thirdCylinderMaterial, nullptr, cylinder);
-		thirdCylinder->translation = vec3(-1, -1, 0);
-		vec3 thirdAxis = normalize(vec3(0, 1, 0.1));
-		thirdCylinder->rotationAngle = -acosf(dot(thirdAxis, vec3(0, 1, 0)));
-		thirdCylinder->rotationAxis = normalize(cross(thirdAxis, vec3(0, 1, 0)));
-
-		Material * cyanMaterial = new Material;
-		cyanMaterial->kd = vec3(0.1, 0.2, 0.3);
-		cyanMaterial->ks = vec3(2, 2, 2);
-		cyanMaterial->shininess = 100;
-		ConeObj * cyanCone = new ConeObj(vec3(0, 1, 0), vec3(-0.1, -1, -0.05), phongShader, cyanMaterial, nullptr, cone);
-		cyanCone->translation = vec3(0, 0, 0);
-
-		Material * magentaMaterial = new Material;
-		magentaMaterial->kd = vec3(0.3, 0, 0.2);
-		magentaMaterial->ks = vec3(2, 2, 2);
-		magentaMaterial->shininess = 20;
-		ConeObj * magentaCone = new ConeObj(vec3(0, 1, 0.8), vec3(0.2, -1, 0), phongShader, magentaMaterial, nullptr, cone);
-		magentaCone->translation = vec3(0, 0, 0);
-
-		Material * texture_material = new Material;
-		texture_material->kd = vec3(1, 1, 1);
-		texture_material->ks = vec3(0, 0, 0);
-		texture_material->ka = vec3(0, 0, 0);
-
-		Texture* kockas = new Texture(20, 20);
-		generateTexture();
-		kockas->updateTexture(20, 20, texture);
-		Object3D * floor = new Object3D(phongShader, texture_material, kockas, square);
-		floor->translation = vec3(0, -1, 0);
-		floor->scaling = vec3(20, 1, 20);
-
-		objects.push_back(firstCylinder);
-		objects.push_back(secondCylinder);
-		objects.push_back(thirdCylinder);
-		objects.push_back(cyanCone);
-		objects.push_back(magentaCone);
+		objects.push_back(ball);
 		objects.push_back(floor);
 
-		for(Object3D* o : objects){
-			auto trias = o->getTriangles();
-			for(Triangle t : trias){
-				allTriangles.push_back(t);
-			}
-		}
-
-		camera.wEye = vec3(0, 1, 4);
+		camera.wEye = vec3(0, 10, 2);
 		camera.wLookat = vec3(0, 0, 0);
 		camera.wVup = vec3(0, 1, 0);
 	}
@@ -552,10 +504,10 @@ public:
 		state.wEye = camera.wEye;
 		state.V = camera.V();
 		state.P = camera.P();
-		state.lights = lights;
-		for (Object3D * obj : objects) obj->Draw(state);
+		for (GameObject * obj : objects) obj->Draw(state);
 	}
 };
+
 
 class EngineApp : public glApp {
 	Scene scene;
@@ -563,7 +515,7 @@ public:
 	EngineApp() : glApp(3, 3, windowWidth, windowHeight, "3D Engine-ke") { }
 
 	void onInitialization() {
-		glViewport(0, 0, windowWidth, windowHeight);
+		glViewport(0, 0, windowWidth*OP_SYS_SCALE, windowHeight*OP_SYS_SCALE);
 		glEnable(GL_DEPTH_TEST);
 		glDisable(GL_CULL_FACE);
 		scene.Build();
@@ -574,6 +526,14 @@ public:
 		scene.Render();
 	}
 	void onKeyboard(int key){
+
+		static bool debounce = true;
+		if(debounce){
+			debounce = false;
+			return;
+		}
+		debounce = true;
+
 		if(key != 'a' && key != 'd') return;
 
 		float x = scene.camera.wEye.x;
