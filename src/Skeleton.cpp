@@ -699,10 +699,10 @@ public:
 		float z = scene.camera.wEye.z;
 		float theta = atan2(z, x);
 		if(key == 'a'){
-			theta -= M_PI / 4;
+			theta -= M_PI / 40;
 		}
 		if(key == 'd'){
-			theta += M_PI / 4;
+			theta += M_PI / 40;
 		}
 		scene.camera.wEye.x = cos(theta) * 4.0;
 		scene.camera.wEye.z = sin(theta) * 4.0;
