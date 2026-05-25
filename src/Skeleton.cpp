@@ -51,6 +51,11 @@ void printvec(vec3 p, std::string name = ""){
 	printf("%s : (%.2f, %.2f, %.2f\n", name.c_str(), p.x, p.y , p.z);
 }
 
+struct Ray{
+	vec3 start;
+	vec3 dir;
+};
+
 template<class T> struct Dnum {
 	float f;
 
@@ -395,6 +400,8 @@ struct Cannonball : GameObject{
 	Material* material;
 	ParamSurface* surface;
 	Object3D* object;
+
+	float radius = 0.25;
 	Cannonball(Shader* _shader){
 		Material* material = new Material();
 		material->kd = vec3(0.01, 0.01, 0.01);
@@ -404,12 +411,10 @@ struct Cannonball : GameObject{
 		ParamSurface* surface = new Sphere();
 
 		object = new Object3D(_shader, material, nullptr, surface);
-		object->scaling = vec3(0.25, 0.25, 0.25);
-		accel = vec3(0, -1, 0);
-		// TODO ide ha kell scaling
+		object->scaling = vec3(1, 1, 1) * radius;
 	}
 	void Control(float tstart, float tend, Scene* scene) override{
-		if(this->pos.y < -100) alive = false;
+		if(this->pos.y < -1) alive = false;
 	}
 	void Draw(RenderState renderState) override{
 		object->translation = pos;
@@ -417,6 +422,33 @@ struct Cannonball : GameObject{
 	}
 	~Cannonball() override{
 		delete object;
+	}
+
+	float intersect(const Ray& ray){
+		// Előadásról
+		// nem kell a material, ilyesmi, csak hogy ütközik-e az időn belül
+		// Az idő Dt és a lézer hosszától függ
+		vec3 dist = ray.start - pos;
+		float a = dot(ray.dir, ray.dir);
+		float b = dot(dist, ray.dir) * 2;
+		float c = dot(dist, dist) - radius * radius;
+		float discr = b * b - 4 * a * c;
+
+		if (discr < 0){
+			return -1;
+		}
+		else {
+			discr = sqrtf(discr);
+		}
+
+		float t1 = (-b + discr)/2/a, t2 = (-b - discr)/2/a;
+		// Ez a speciális eset nálam is áll, mert tetszőleges Ray ütközik
+		if (t1 <= 0) return -1; // t1 >= t2 for sure in this special case
+
+		// a lézer modellje csak előre néz a sugárhoz képest
+		float t = (t2 > 0) ? t2 : t1;
+
+		return t;
 	}
 };
 
@@ -525,8 +557,15 @@ struct Cannon : GameObject{
 		delete body;
 	}
 };
+float Cannon::MIN_SHOOT_TIME = 2.0;
+float Cannon::MAX_SHOOT_TIME = 10.0;
+float Cannon::MIN_SHOOT_SPEED = 10.0;
+float Cannon::MAX_SHOOT_SPEED = 30.0;
 
 struct Laser : GameObject{
+	static float LASER_LENGTH;
+	static float LASER_SPEED;
+
 	Material* material;
 	ParamSurface* surface;
 	Object3D* object;
@@ -537,8 +576,9 @@ struct Laser : GameObject{
 		ParamSurface* surface = new Cylinder();
 
 		object = new Object3D(_shader, material, nullptr, surface);
-		object->scaling = vec3(0.025, 1, 0.025);
+		object->scaling = vec3(0.025, LASER_LENGTH, 0.025);
 	}
+	void Control(float tstart, float tend, Scene* scene) override;
 	void Draw(RenderState renderState) override{
 		object->translation = pos;
 
@@ -552,17 +592,23 @@ struct Laser : GameObject{
 
 		object->Draw(renderState);
 	}
-
+	Ray getRay(){
+		Ray r;
+		r.dir = vel;
+		r.start = pos;
+		return r;
+	}
 	~Laser() override{
 		delete object;
 	}
 };
-float Cannon::MIN_SHOOT_TIME = 2.0;
-float Cannon::MAX_SHOOT_TIME = 10.0;
-float Cannon::MIN_SHOOT_SPEED = 1.0;
-float Cannon::MAX_SHOOT_SPEED = 10.0;
+
+float Laser::LASER_LENGTH = 1.0;
+float Laser::LASER_SPEED = 30.0;
 
 struct Scene {
+	static float GRAVITY;
+
 	Shader* phongShader;
 	int current = 0;
 	std::vector<GameObject *> objects[2];
@@ -584,9 +630,11 @@ public:
 	}
 	void testBuild(){
 		GameObject* laser = new Laser(phongShader);
+		laser->vel = vec3(0, 1, 0);
 		Join(laser);
 
 		GameObject* ball = new Cannonball(phongShader);
+		ball->pos = vec3(0, 2, 0);
 		ball->accel = vec3(0, 0, 0);
 		Join(ball);
 	}
@@ -594,13 +642,13 @@ public:
 	void Build() {
 		phongShader = new PhongShader();
 		camera.wEye = vec3(0, 10, 50);
-		camera.wLookat = vec3(0, 0, 0);
+		camera.wLookat = vec3(0, 10, 0);
 		camera.wVup = vec3(0, 1, 0);
 
-		// camera.wEye = vec3(0, 1, 5);
+		// camera.wEye = vec3(0, 1, 10);
+		// camera.wLookat = vec3(0, 0, 0);
 		// testBuild();
 		// return;
-
 
 		GameObject* ball = new Cannonball(phongShader);
 		GameObject* floor = new Floor(phongShader);
@@ -650,24 +698,57 @@ public:
 		GameObject* cannonball = new Cannonball(phongShader);
 		cannonball->pos = startpos;
 		cannonball->vel = startvel;
+		cannonball->accel = vec3(0, -GRAVITY, 0);
 		Join(cannonball);
 	}
 
-	void ShootLaser(){
+	void ShootLaserAt(Cannonball* ball){
+		// bináris kereséssel ütközési időpont számítása
+		float left = 0;
+		// Ennyi idő alatt el kéne találni
+		float right = 10;
+		float T;
+		int iter_count = 0;
+		while (iter_count++ < 10) {
+			T = (left+right) / 2;
+			vec3 posAtT = ball->pos + ball->vel * T + ball->accel*T*T/2.0;
+			// Ha eléri, akkor kevesebb idő alatt is eléri?
+			// Tudni, hogy 0, 0, 0-ból indul a lézer
+			if(length(posAtT) / Laser::LASER_SPEED < T){
+				right = T;
+			}else {
+				// Ha nem éri el, akkor több idő kell
+				left = T;
+			}
+		}
+		// Végére 10 / 2^10 pontosságú lesz, mivel középpontra céloz, feltehető hogy el fogja találni
+
+		vec3 posAtT = ball->pos + ball->vel * T + ball->accel*T*T/2.0;
+		vec3 laser_dir = normalize(posAtT);
+
 		GameObject* laser = new Laser(phongShader);
 		laser->pos = vec3(0, 0, 0);
-		vec3 laser_dir = normalize(vec3(1, 1, 1));
-		// TODO constant
-		float laser_speed = 5;
-		laser->vel = laser_dir*laser_speed;
+		laser->vel = laser_dir*Laser::LASER_SPEED;
 		Join(laser);
 	}
-};
+	void ShootLaser(){
+		// Most mindenre lő
+		for(GameObject* o : objects[current]){
+			if(Cannonball* ball = dynamic_cast<Cannonball*>(o)){
+				ShootLaserAt(ball);
+			}
+		}
+	}
 
+	std::vector<GameObject *> getGameObjects(){
+		return objects[current];
+	}
+};
+float Scene::GRAVITY = 10.0;
 void Cannon::Shoot(){
 		float speed = random_float(Cannon::MIN_SHOOT_SPEED, Cannon::MAX_SHOOT_SPEED);
-		float horiz_angle = random_float(-M_PI_4, M_PI_4);
-		float vert_angle = random_float(M_PI / 8.0, M_PI_2 - M_PI / 8.0);
+		float horiz_angle = random_float(-M_PI / 8.0, M_PI / 8.0);
+		float vert_angle = random_float(M_PI_4, M_PI_2 - M_PI / 8.0);
 
 		vec3 shoot_dir;
 		shoot_dir.x = cosf(horiz_angle) * cosf(vert_angle);
@@ -680,6 +761,23 @@ void Cannon::Shoot(){
 		scene->addCannonball(pos, shoot_dir * speed);
 	}
 
+void Laser::Control(float tstart, float tend, Scene* scene) {
+	float dt = tend-tstart;
+	std::vector<GameObject *> objects = scene->getGameObjects();
+	Ray r = this->getRay();
+	for(GameObject* o : objects){
+		if(Cannonball* ball = dynamic_cast<Cannonball*>(o)){
+
+			float t = ball->intersect(r);
+			if( t > 0 && t < LASER_LENGTH + dt*LASER_SPEED){
+				ball->alive = false;
+				alive = false;
+			}
+		}
+	}
+
+	if(length(pos) > 100) alive = false;
+}
 
 class EngineApp : public glApp {
 	Scene scene;
@@ -698,7 +796,7 @@ public:
 		scene.ShootLaser();
 	}
 	void onDisplay() {
-		glClearColor(0.5, 0.5f, 0.5f, 1.0f);
+		glClearColor(0.529, 0.808, 0.922, 1.0f);
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 		scene.Render();
 	}
@@ -709,6 +807,10 @@ public:
 			return;
 		}
 		debounce = true;
+
+		if(key == 'l'){
+			scene.ShootLaser();
+		}
 
 		if(key != 'a' && key != 'd') return;
 
