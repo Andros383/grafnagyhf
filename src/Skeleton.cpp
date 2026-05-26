@@ -5,8 +5,10 @@
 // Vannak felesleges programsorok és kommentek, ékezetek is
 
 #include "framework.h"
+#include <algorithm>
 #include <cerrno>
 #include <cmath>
+#include <complex>
 #include <cstdio>
 #include <cstdlib>
 #include <iterator>
@@ -264,8 +266,12 @@ class VolumetricShader : public GPUProgram {
 		out vec4 outColor;
 
 		void main() {
-			outColor = texture(textureMap[int(0)], gl_PointCoord.xy) *
-			modulation;
+			// manuális színezés itt, mert nem tudom hogyan kell alfát átvinni
+			// textúra feltöltés amit kézzel csinálok csak vec3-at támogat
+			// gondolom lodepng-ben lenne, csak nem bogozom ki
+			outColor = texture(textureMap[int(0)], gl_PointCoord.xy) * modulation;
+			// tényleges szín fekete, + az alapján, hogy mennyire fehér az átlátszóság
+			outColor = vec4(0, 0, 0, 1-outColor.x);
 		}
 	)";
 
@@ -466,14 +472,14 @@ struct GameObject {
 
 struct Cannonball : GameObject {
 	static bool autoShootingEnabled;
-	static int AUTO_SHOOT_AT_START;
+	static float AUTO_SHOOT_AT_START;
 
 	static Material* material;
 	static ParamSurface* surface;
 	Object3D* object;
 
 	bool shotAt = false;
-	int autoShootAt = AUTO_SHOOT_AT_START;
+	float autoShootAt = AUTO_SHOOT_AT_START;
 
 	float radius = 0.25;
 	Cannonball(Shader* _shader) {
@@ -528,7 +534,7 @@ struct Cannonball : GameObject {
 	}
 };
 bool Cannonball::autoShootingEnabled = false;
-int Cannonball::AUTO_SHOOT_AT_START = 75;
+float Cannonball::AUTO_SHOOT_AT_START = 75;
 
 Material* Cannonball::material = nullptr;
 ParamSurface* Cannonball::surface = nullptr;
@@ -588,7 +594,7 @@ struct Cannon : GameObject {
 	Object3D* body;
 
 	vec3 rotationDir = vec3(0, 1, 0);
-	float nextShoot = 1.5;
+	float nextShoot = 0;
 	Cannon(Shader* _shader, Scene* _scene) {
 		scene = _scene;
 
@@ -840,13 +846,18 @@ struct Particle {
 	vec4 color, dcolor;
 
   public:
-	Particle() {
+	Particle(vec3 dir) {
 		lifeTime = random_float(1, 2);
-		dsize = random_float(0.1f, 0.5f) / lifeTime;
-		// Gömbszimmetrikus eloszlásból mintavételezés
-		do {
-			velocity = vec3(random_float(-1, 1), random_float(-1, 1), random_float(-1, 1));
-		} while (length(velocity) > 1);
+		size = random_float(0.5, 1.5);
+		dsize = size / lifeTime;
+
+		// alapból dir irányba megy
+		velocity = normalize(dir) * 4;
+		// random szórás
+		velocity += vec3(random_float(-1, 1), random_float(-1, 1), random_float(-1, 1));
+		// rand^2-el szorozva, hogy egy picit megálljanak a levegőben
+		velocity = velocity * pow(random_float(0, 1), 2);
+
 
 		color = vec4(random_float(3, 4), random_float(2, 4), random_float(0.3f, 1.3f), 1);
 		dcolor = vec4(0, -2.0f, -0.8f, -1) / lifeTime;
@@ -857,7 +868,7 @@ struct Particle {
 			return false;
 		displacement += velocity * dt;
 		velocity += acceleration * dt;
-		size += dsize * dt;
+		size -= dsize * dt;
 		color += dcolor * dt;
 		return true;
 	}
@@ -867,10 +878,14 @@ class Explosion : public VolumetricGameObject {
 	std::vector<Particle> particles;
 
   public:
-	Explosion(vec3 _position) {
+	Explosion(vec3 _position, vec3 dir) {
+		// dir: lézer iránya
+		// egy picit arra szórja a füstöt
 		pos = _position;
-		for (int i = 0; i < 50; i++)
-			particles.push_back(Particle());
+		for (int i = 0; i < 50; i++){
+			Particle p = Particle(dir);
+			particles.push_back(p);
+		}
 	}
 	void Animate(float tstart, float tend) {
 		alive = false;
@@ -889,6 +904,7 @@ class Explosion : public VolumetricGameObject {
 
 struct Scene {
 	static float GRAVITY;
+	static int CANNON_NUM;
 
 	bool matrix = false;
 
@@ -910,7 +926,7 @@ struct Scene {
 		GameObject* floor = new Floor(phongShader);
 		laserCannon = new LaserCannon(phongShader);
 
-		int maxi = 20;
+		int maxi = CANNON_NUM;
 		for (int i = 0; i < maxi; i++) {
 			float radius = 20;
 			GameObject* cannon = new Cannon(phongShader, this);
@@ -946,6 +962,7 @@ struct Scene {
 		camera.wEye.x = cos(theta) * radius;
 		camera.wEye.z = sin(theta) * radius;
 	}
+
 	void Simulate(float tstart, float tend) {
 		const float dt = 0.05f; // dt kicsi
 		for (float t = tstart; t < tend; t += dt) {
@@ -1027,16 +1044,19 @@ struct Scene {
 		}
 	}
 
-	Cannonball* SelectBall(const Ray& r) {
+	Cannonball* SelectBall(const Ray& r, float radius_mult = 2) {
+		Cannonball* minBall = nullptr;
+		float tMin = 10000.0;
 		for (GameObject* o : objects[current]) {
 			if (Cannonball* ball = dynamic_cast<Cannonball*>(o)) {
-				float t = ball->intersect(r, 2);
-				if (t > 0) {
-					return ball;
+				float t = ball->intersect(r, radius_mult);
+				if (t > 0 && t < tMin) {
+					minBall = ball;
+					tMin = t;
 				}
 			}
 		}
-		return nullptr;
+		return minBall;
 	}
 
 	void toggleMatrix() {
@@ -1056,6 +1076,8 @@ struct Scene {
 	}
 };
 float Scene::GRAVITY = 10.0;
+int Scene::CANNON_NUM = 20;
+
 void Cannon::Shoot() {
 	float speed = random_float(Cannon::MIN_SHOOT_SPEED, Cannon::MAX_SHOOT_SPEED);
 
@@ -1085,10 +1107,10 @@ void Laser::Control(float tstart, float tend, Scene* scene) {
 		if (Cannonball* ball = dynamic_cast<Cannonball*>(o)) {
 
 			float t = ball->intersect(r, 0.5);
-			if (t > 0 && t < LASER_SPEED + dt * LASER_SPEED) {
+			if (t > 0 && t < LASER_LENGTH + dt * LASER_SPEED) {
 				ball->alive = false;
 				alive = false;
-				scene->Join(new Explosion(ball->pos));
+				scene->Join(new Explosion(ball->pos, vel));
 			}
 		}
 	}
@@ -1098,10 +1120,10 @@ void Laser::Control(float tstart, float tend, Scene* scene) {
 }
 
 void Cannonball::Control(float tstart, float tend, Scene* scene) {
+	float dt = tend-tstart;
 	if (autoShootingEnabled && autoShootAt > 0) {
-		// TODO tesztelni
-		autoShootAt--;
-		if (autoShootAt == 0) {
+		autoShootAt -= dt;
+		if (autoShootAt <= 0) {
 			scene->ShootLaserAt(this);
 		}
 	}
@@ -1109,9 +1131,11 @@ void Cannonball::Control(float tstart, float tend, Scene* scene) {
 		alive = false;
 }
 
-class EngineApp : public glApp {
-	Scene scene;
 
+struct EngineApp : public glApp {
+	Scene scene;
+	float timeMul = 1.0;
+	static float CLICK_RADIUS_MULT;
   public:
 	EngineApp() : glApp(3, 3, windowWidth, windowHeight, "3D Engine-ke") {}
 
@@ -1122,7 +1146,7 @@ class EngineApp : public glApp {
 
 		// Minden konstans itt is legyen beállítva, könnyebb változtatáshoz
 		Cannonball::autoShootingEnabled = false;
-		Cannonball::AUTO_SHOOT_AT_START = 75;
+		Cannonball::AUTO_SHOOT_AT_START = 0.5;
 
 		Cannon::MIN_SHOOT_TIME = 2.0;
 		Cannon::MAX_SHOOT_TIME = 10.0;
@@ -1132,27 +1156,31 @@ class EngineApp : public glApp {
 		Laser::LASER_LENGTH = 1.0;
 		Laser::LASER_SPEED = 30.0;
 
+		Scene::CANNON_NUM = 2;
 
+		timeMul = 1.0;
+		CLICK_RADIUS_MULT = 2.0;
 
 		VolumetricGameObject::shader = new VolumetricShader();
 		VolumetricGameObject::volume = new Volume();
+
 		Texture* t = new Texture();
 
 		std::vector<vec3> texture_vec;
-		vec3 blue = vec3(0, 0, 0);
+		vec3 black = vec3(0, 0, 1);
 		vec3 white = vec3(1, 1, 1);
 		for (int i = 0; i < 20; i++) {
 			for (int j = 0; j < 20; j++) {
 				vec3 active = white;
-				if ((i + j) % 2 == 0) {
-					active = blue;
-				}
-				texture_vec.push_back(active);
+				int dist_from_center = sqrt(abs(10-j) * abs(10-j) + abs(10-i)*abs(10-i));
+				float coeff = (float)dist_from_center / 20;
+				vec3 final_color = white * coeff;
+				texture_vec.push_back(final_color);
 			}
 		}
 		t->updateTexture(20, 20, texture_vec);
 
-		VolumetricGameObject::splatTexture[0] = new Texture();
+		VolumetricGameObject::splatTexture[0] = t;
 
 		srand(time(nullptr));
 
@@ -1165,6 +1193,7 @@ class EngineApp : public glApp {
 		scene.Render();
 	}
 	void onKeyboard(int key) {
+
 		// Linuxon kell a debounce, mert minden keyboard input dupla
 		static bool debounce = true;
 		if (debounce) {
@@ -1183,11 +1212,46 @@ class EngineApp : public glApp {
 			scene.ShootAutoLaser();
 		}
 
+		if(key == 'e'){
+			Cannonball::autoShootingEnabled = !Cannonball::autoShootingEnabled;
+		}
+
+		if(key == 'r'){
+			scene.camera.wLookat.y += 1;
+		}
+		if(key == 'f'){
+			scene.camera.wLookat.y -= 1;
+		}
+		if(key == 'w'){
+			scene.camera.wEye.y += 1;
+		}
+		if(key == 's'){
+			scene.camera.wEye.y -= 1;
+		}
+
 		if (key == 'a') {
 			scene.rotateCamera(M_PI / 32);
 		}
 		if (key == 'd') {
 			scene.rotateCamera(-M_PI / 32);
+		}
+
+		if(key == 't'){
+			timeMul += 0.1;
+			if(timeMul > 5) timeMul = 5;
+		}
+		if(key == 'g'){
+			timeMul -= 0.1;
+			if(timeMul < 0) timeMul = 0;
+		}
+
+		if(key == 'q'){
+			auto objects = scene.getGameObjects();
+			for (GameObject* o : objects) {
+				if (Cannon* cannon = dynamic_cast<Cannon*>(o)) {
+					cannon->nextShoot = 0;
+				}
+			}
 		}
 
 		refreshScreen();
@@ -1200,20 +1264,23 @@ class EngineApp : public glApp {
 		r.dir = scene.camera.cameraDirFromPx(pX, pY);
 		r.start = scene.camera.wEye;
 
-		Cannonball* ball = scene.SelectBall(r);
+		Cannonball* ball = scene.SelectBall(r, CLICK_RADIUS_MULT);
 
 		if (ball != nullptr) {
 			scene.ShootLaserAt(ball);
 		}
 	}
 	void onTimeElapsed(float startTime, float endTime) {
+		startTime = startTime*timeMul;
+		endTime = endTime*timeMul;
+
 		static float lastStatTime = -1;
 		if (lastStatTime < endTime - 2) {
-			printf("\n\n\n");
-			printf("Lasers/Cannonballs : %d/%d (%f)", lasers_shot, balls_shot, (float)lasers_shot / balls_shot * 100.0);
+			printf("Lasers/Cannonballs : %d/%d (%f)\n", lasers_shot, balls_shot, (float)lasers_shot / balls_shot * 100.0);
 			lastStatTime = endTime;
 		}
 		scene.Simulate(startTime, endTime);
 		refreshScreen();
 	}
 } app;
+float EngineApp::CLICK_RADIUS_MULT;
